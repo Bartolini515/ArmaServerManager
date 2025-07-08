@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+django = "*"
+djangorestframework = "*"
+environ = "*"
+django-debug-toolbar = "*"
+django-environ = "*"
+django-cors-headers = "*"
+django-rest-knox = "*"
+gunicorn = "*"
+pymysql = {extras = ["rsa"], version = "*"}
+requests = "*"
+beautifulsoup4 = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.12"
