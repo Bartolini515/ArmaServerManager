@@ -1,25 +1,48 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import viteLogo from "/vite.svg";
+import { Routes, Route, useLocation } from "react-router";
 import "./App.css";
+import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFnsV3";
+import { LocalizationProvider } from "@mui/x-date-pickers";
+import { de } from "date-fns/locale";
+import { plPL } from "@mui/x-date-pickers/locales";
+import Login from "./components/Login";
+import ChangePassword from "./components/ChangePassword";
+import Navbar from "./components/navbar/Navbar";
+import ProtectedRoutes from "./components/ProtectedRoutes";
+import Dashboard from "./components/dashboard/Dashboard";
+import Account from "./components/Account";
 
-function App() {
-	const [count, setCount] = useState(0);
+export default function App() {
+	const location = useLocation();
+	const noNavbar =
+		location.pathname === "/" ||
+		location.pathname === "/register" ||
+		location.pathname === "/change_password";
 
 	return (
-		<div className="App">
-			<div>
-				<a href="https://vitejs.dev" target="_blank">
-					<img src={viteLogo} className="logo" alt="Vite logo" />
-				</a>
-				<a href="https://react.dev" target="_blank">
-					<img src={reactLogo} className="logo react" alt="React logo" />
-				</a>
-			</div>
-			<h1>Vite + React</h1>
-			<button onClick={() => setCount(count + 1)}>Count is: {count}</button>
-		</div>
+		<LocalizationProvider
+			dateAdapter={AdapterDateFns}
+			adapterLocale={de}
+			localeText={
+				plPL.components.MuiLocalizationProvider.defaultProps.localeText
+			}
+		>
+			{noNavbar ? (
+				<Routes>
+					<Route path="/" element={<Login />} />
+					<Route path="/change_password" element={<ChangePassword />} />
+				</Routes>
+			) : (
+				<Navbar
+					content={
+						<Routes>
+							<Route element={<ProtectedRoutes />}>
+								<Route path="/dashboard" element={<Dashboard />} />
+								<Route path="/account" element={<Account />} />
+							</Route>
+						</Routes>
+					}
+				/>
+			)}
+		</LocalizationProvider>
 	);
 }
-
-export default App;
