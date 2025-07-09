@@ -6,6 +6,8 @@ from .models import *
 from django.contrib.auth import get_user_model, authenticate
 from django.utils import timezone
 from knox.models import AuthToken
+import psutil
+import platform
 User = get_user_model()
 
 def message_response(data, message="Operacja się powiodła"):
@@ -84,3 +86,24 @@ class AccountViewset(viewsets.ViewSet):
         data = serializer.data
             
         return Response({'user': data, 'isAdmin': user.is_staff})
+
+class ServicesViewset(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    @action(detail=False, methods=["get"], url_path="get_system_info")
+    def getSystemInfo(self, request):
+        cpu_usage = psutil.cpu_percent(interval=None)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        cpu_count = psutil.cpu_count()
+        os_name = platform.system()
+
+        return Response({
+            'cpuUsage': cpu_usage / 100,
+            'memoryLeft': memory.available,
+            'memoryTotal': memory.total,
+            'spaceLeft': disk.free,
+            'spaceTotal': disk.total,
+            'cpuCount': cpu_count,
+            'osName': os_name,
+        })

@@ -1,15 +1,14 @@
-import "../App.css";
 import { useEffect, useState } from "react";
 import { Box, Typography } from "@mui/material";
-import MyTextField from "./forms/MyTextField";
-import MyPassField from "./forms/MyPassField";
-import MyButton from "./forms/MyButton";
+import MyTextField from "../forms/MyTextField";
+import MyPassField from "../forms/MyPassField";
+import MyButton from "../forms/MyButton";
 // import { Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
-import AxiosInstance from "./AxiosInstance";
+import AxiosInstance from "../AxiosInstance";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "../contexts/AuthContext";
-import { useAlert } from "../contexts/AlertContext";
+import { useAuth } from "../../contexts/AuthContext";
+import { useAlert } from "../../contexts/AlertContext";
 // import MyMessage from "./Message";
 
 interface FormData {

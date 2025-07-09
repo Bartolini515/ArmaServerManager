@@ -134,8 +134,12 @@ export default function Navbar({ content }: NavbarProps) {
 				open={open}
 			>
 				<DrawerHeader>
-					{/* TODO: Logo FOG */}
-					<img src="" alt="Logo" width="32" height="32" />
+					<img
+						src="/FOG_Logo_MM_Division.png"
+						alt="Logo"
+						width="32"
+						height="32"
+					/>
 					<Typography noWrap component="div">
 						Panel Narzędzi
 					</Typography>
