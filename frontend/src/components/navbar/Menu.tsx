@@ -3,33 +3,25 @@ import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
 import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
-import Collapse from "@mui/material/Collapse";
-import ExpandLess from "@mui/icons-material/ExpandLess";
-import ExpandMore from "@mui/icons-material/ExpandMore";
-import StarBorder from "@mui/icons-material/StarBorder";
-import GridViewIcon from "@mui/icons-material/GridView";
-import CalendarMonthIcon from "@mui/icons-material/CalendarMonth";
-import ScheduleIcon from "@mui/icons-material/Schedule";
-import SchoolIcon from "@mui/icons-material/School";
-import EditNoteIcon from "@mui/icons-material/EditNote";
-import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
-import DatasetOutlinedIcon from "@mui/icons-material/DatasetOutlined";
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import { useState } from "react";
-import { useAuth } from "../../contexts/AuthContext";
+// import Collapse from "@mui/material/Collapse";
+// import ExpandLess from "@mui/icons-material/ExpandLess";
+// import ExpandMore from "@mui/icons-material/ExpandMore";
+// import StarBorder from "@mui/icons-material/StarBorder";
+import DashboardIcon from "@mui/icons-material/Dashboard";
+import StorageIcon from "@mui/icons-material/Storage";
+// import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
+// import DatasetOutlinedIcon from "@mui/icons-material/DatasetOutlined";
+// import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+// import { useState } from "react";
+// import { useAuth } from "../../contexts/AuthContext";
 
 export default function Menu() {
-	const [openEvents, setOpenEvents] = useState(false);
-	const [openModerator, setOpenModerator] = useState(false);
-	const { isAdmin } = useAuth();
+	// const [openModerator, setOpenModerator] = useState(false);
+	// const { isAdmin } = useAuth();
 
-	const handleClickEvents = () => {
-		setOpenEvents(!openEvents);
-	};
-
-	const handleClickModerator = () => {
-		setOpenModerator(!openModerator);
-	};
+	// const handleClickModerator = () => {
+	// 	setOpenModerator(!openModerator);
+	// };
 
 	const location = useLocation();
 	const path = location.pathname;
@@ -51,63 +43,23 @@ export default function Menu() {
 				selected={path === "/dashboard"}
 			>
 				<ListItemIcon>
-					<GridViewIcon />
+					<DashboardIcon />
 				</ListItemIcon>
 				<ListItemText primary="Pulpit" />
 			</ListItemButton>
-			<ListItemButton
-				onClick={handleClickEvents}
-				selected={path === "/timetable" || path === "/tasks"}
-			>
-				<ListItemIcon>
-					<ScheduleIcon />
-				</ListItemIcon>
-				<ListItemText primary="Wydarzenia" />
-				{openEvents ? <ExpandLess /> : <ExpandMore />}
-			</ListItemButton>
-			<Collapse in={openEvents} timeout="auto" unmountOnExit>
-				<List component="div" disablePadding>
-					<ListItemButton
-						sx={{ pl: 3 }}
-						component={Link}
-						to="/timetable"
-						selected={path === "/timetable"}
-					>
-						<CalendarMonthIcon>
-							<StarBorder />
-						</CalendarMonthIcon>
-						<ListItemText primary="Harmonogram" />
-					</ListItemButton>
-				</List>
-			</Collapse>
-			<Collapse in={openEvents} timeout="auto" unmountOnExit>
-				<List component="div" disablePadding>
-					<ListItemButton
-						sx={{ pl: 3 }}
-						component={Link}
-						to="/tasks"
-						selected={path === "/tasks"}
-					>
-						<EditNoteIcon>
-							<StarBorder />
-						</EditNoteIcon>
-						<ListItemText primary="Zadania" />
-					</ListItemButton>
-				</List>
-			</Collapse>
 
 			<ListItemButton
 				component={Link}
-				to="/schedule"
-				selected={path === "/schedule"}
+				to="/instances"
+				selected={path === "/instances"}
 			>
 				<ListItemIcon>
-					<SchoolIcon />
+					<StorageIcon />
 				</ListItemIcon>
-				<ListItemText primary="Plan lekcji" />
+				<ListItemText primary="Instancje serwerowe" />
 			</ListItemButton>
 
-			<ListItemButton
+			{/* <ListItemButton
 				onClick={handleClickModerator}
 				selected={
 					path === "/moderator_panel_users" ||
@@ -146,7 +98,7 @@ export default function Menu() {
 						<ListItemText primary="Konfiguracja" />
 					</ListItemButton>
 				</List>
-			</Collapse>
+			</Collapse> */}
 		</List>
 	);
 }

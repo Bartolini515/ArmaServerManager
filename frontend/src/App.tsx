@@ -9,7 +9,8 @@ import ChangePassword from "./components/auth/ChangePassword";
 import Navbar from "./components/navbar/Navbar";
 import ProtectedRoutes from "./components/ProtectedRoutes";
 import Dashboard from "./components/dashboard/Dashboard";
-import Account from "./components/Account";
+import Account from "./components/account/Account";
+import Instances from "./components/instances/Instances";
 
 export default function App() {
 	const location = useLocation();
@@ -38,6 +39,7 @@ export default function App() {
 							<Route element={<ProtectedRoutes />}>
 								<Route path="/dashboard" element={<Dashboard />} />
 								<Route path="/account" element={<Account />} />
+								<Route path="/instances" element={<Instances />} />
 							</Route>
 						</Routes>
 					}

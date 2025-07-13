@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Paper from "@mui/material/Paper";
 import { Divider, Stack } from "@mui/material";
-import CircularProgressWithLabel from "../feedback/CircularProgressWithLabel";
+import CircularProgressWithLabel from "../../UI/feedback/CircularProgressWithLabel";
 // import { getSystemInfo } from "../../services/systemService";
 import { useInterval } from "../../hooks/use-interval";
 import { humanFileSize } from "../../util/util";
@@ -78,7 +78,7 @@ export default function SystemResourcesMonitor(props: Props) {
 	return (
 		<Paper>
 			<Stack
-				direction="row"
+				direction={{ xs: "column", sm: "row" }}
 				divider={<Divider orientation="vertical" flexItem />}
 				p={4}
 				spacing={3}
@@ -96,7 +96,7 @@ export default function SystemResourcesMonitor(props: Props) {
 						<p>CPU usage</p>
 						<div>
 							<CircularProgressWithLabel
-								value={Math.round(systemInfo.cpuUsage * 100)}
+								value={systemInfo.cpuUsage}
 								color={evaluateColor(systemInfo.cpuUsage)}
 							/>
 						</div>

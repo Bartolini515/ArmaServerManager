@@ -1,6 +1,6 @@
 import { Typography, Box, Avatar } from "@mui/material";
-import { useAuth } from "../contexts/AuthContext";
-import MyButton from "./forms/MyButton";
+import { useAuth } from "../../contexts/AuthContext";
+import MyButton from "../../UI/forms/MyButton";
 import { useNavigate } from "react-router-dom";
 
 export default function Account() {

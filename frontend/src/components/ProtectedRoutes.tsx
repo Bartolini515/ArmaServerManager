@@ -11,7 +11,7 @@ export default function ProtectedRoutes() {
 	}
 
 	if (!user) {
-		AxiosInstance.get("account/getuser/")
+		AxiosInstance.get("account/get_user/")
 			.then((response) => {
 				if (response.data.user.profile_picture) {
 					const baseURL = AxiosInstance.defaults.baseURL?.replace("/api", "");

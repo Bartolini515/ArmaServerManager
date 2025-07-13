@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Box, Typography } from "@mui/material";
-import MyPassField from "../forms/MyPassField";
-import MyButton from "../forms/MyButton";
+import MyPassField from "../../UI/forms/MyPassField";
+import MyButton from "../../UI/forms/MyButton";
 import { useForm } from "react-hook-form";
 import AxiosInstance from "../AxiosInstance";
 import { useNavigate } from "react-router-dom";

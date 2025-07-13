@@ -74,8 +74,8 @@ class AccountViewset(viewsets.ViewSet):
         else:
             return Response(serializer.errors, status=400)
     
-    @action(detail=False, methods=["get"], url_path="getuser")
-    def getUser(self, request):
+    @action(detail=False, methods=["get"], url_path="get_user")
+    def get_user(self, request):
         try:
             token = request.headers['Authorization'][6:21]
             auth_token = AuthToken.objects.get(token_key=token[:15])
@@ -92,14 +92,14 @@ class ServicesViewset(viewsets.ModelViewSet):
     
     @action(detail=False, methods=["get"], url_path="get_system_info")
     def getSystemInfo(self, request):
-        cpu_usage = psutil.cpu_percent(interval=None)
+        cpu_usage = round(psutil.cpu_percent(interval=None))
         memory = psutil.virtual_memory()
         disk = psutil.disk_usage('/')
         cpu_count = psutil.cpu_count()
         os_name = platform.system()
 
         return Response({
-            'cpuUsage': cpu_usage / 100,
+            'cpuUsage': cpu_usage,
             'memoryLeft': memory.available,
             'memoryTotal': memory.total,
             'spaceLeft': disk.free,

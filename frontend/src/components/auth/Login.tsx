@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Box, Typography } from "@mui/material";
-import MyTextField from "../forms/MyTextField";
-import MyPassField from "../forms/MyPassField";
-import MyButton from "../forms/MyButton";
+import MyTextField from "../../UI/forms/MyTextField";
+import MyPassField from "../../UI/forms/MyPassField";
+import MyButton from "../../UI/forms/MyButton";
 // import { Link } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import AxiosInstance from "../AxiosInstance";
