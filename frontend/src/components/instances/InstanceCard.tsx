@@ -1,5 +1,13 @@
-import { Card, CardActions, CardContent, Typography } from "@mui/material";
+import {
+	Box,
+	Button,
+	Card,
+	CardActions,
+	CardContent,
+	Typography,
+} from "@mui/material";
 import MyButton from "../../UI/forms/MyButton";
+import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 
 interface Props {
 	id: number;
@@ -8,7 +16,7 @@ interface Props {
 	preset: string;
 	is_running: boolean;
 	is_ready: boolean;
-	handleClick: (type: "start" | "stop" | "download", id: number) => void;
+	handleClick: (type: "start" | "stop" | "download" | "delete", id: number) => void;
 	downloadTask?: {
 		taskId: number;
 		state: string;
@@ -20,19 +28,35 @@ export default function InstanceCard(props: Props) {
 	return (
 		<Card sx={{ minWidth: { xs: 300, sm: 400, md: 800 } }}>
 			<CardContent sx={{ padding: "8px 16px" }}>
-				<Typography
-					variant="h5"
-					component="div"
+				<Box
 					sx={{
 						display: "flex",
-						justifyContent: "center",
-						fontSize: 28,
+						justifyContent: "space-between",
 						marginBottom: "16px",
 					}}
 				>
-					{props.title}
-				</Typography>
-
+					<Button
+						sx={{
+							minWidth: 0,
+							padding: "6px",
+						}}
+						onClick={() => props.handleClick("delete", props.id)}
+					>
+						<DeleteForeverIcon sx={{ color: "red" }} fontSize="medium" />
+					</Button>
+					<Typography
+						variant="h5"
+						component="div"
+						sx={{
+							display: "flex",
+							justifyContent: "center",
+							fontSize: 28,
+						}}
+					>
+						{props.title}
+					</Typography>
+					<Box></Box>
+				</Box>
 				<Typography component={"ul"}>
 					<Typography component={"li"} fontWeight={"bold"}>
 						Preset:{" "}

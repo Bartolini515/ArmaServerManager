@@ -40,6 +40,7 @@ class Instances(models.Model):
     name = models.CharField(max_length=255, unique=True)
     user = models.ForeignKey(Profile, on_delete=models.CASCADE, related_name='instances', null=True, blank=True)
     preset = models.FileField(upload_to=user_presets_directory_path, unique=True)
+    start_file_path = models.CharField(max_length=255, blank=True, null=True)
     port = models.OneToOneField('Ports', on_delete=models.CASCADE, related_name='instance')
     is_ready = models.BooleanField(default=False)
     is_running = models.BooleanField(default=False)

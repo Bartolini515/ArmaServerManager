@@ -11,6 +11,8 @@ import ProtectedRoutes from "./components/ProtectedRoutes";
 import Dashboard from "./components/dashboard/Dashboard";
 import Account from "./components/account/Account";
 import Instances from "./components/instances/Instances";
+import ModeratorPanelConfiguration from "./components/moderatorPanel/ModeratorPanelConfiguration";
+import ModeratorPanelDataManagement from "./components/moderatorPanel/ModeratorPanelDataManagement";
 
 export default function App() {
 	const location = useLocation();
@@ -40,6 +42,14 @@ export default function App() {
 								<Route path="/dashboard" element={<Dashboard />} />
 								<Route path="/account" element={<Account />} />
 								<Route path="/instances" element={<Instances />} />
+								<Route
+									path="/moderator_panel_data_management"
+									element={<ModeratorPanelDataManagement />}
+								/>
+								<Route
+									path="/moderator_panel_config"
+									element={<ModeratorPanelConfiguration />}
+								/>
 							</Route>
 						</Routes>
 					}

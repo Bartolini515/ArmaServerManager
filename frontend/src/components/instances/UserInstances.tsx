@@ -1,15 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAlert } from "../../contexts/AlertContext";
 import { useInterval } from "../../hooks/use-interval";
 import AxiosInstance from "../AxiosInstance";
 import InstanceCard from "./InstanceCard";
-import { Stack } from "@mui/material";
+import { Stack, Typography } from "@mui/material";
 
 interface Instance {
 	id: number;
 	name: string;
 	user: string;
 	preset: string;
+	start_file_path: string;
 	created_at: string;
 	is_admin_instance: boolean;
 	is_ready: boolean;
@@ -32,7 +33,14 @@ export default function UserInstances(props: Props) {
 	const { setAlert } = useAlert();
 	const [downloadTasks, setDownloadTasks] = useState<{
 		[instanceId: number]: DownloadTask;
-	}>({});
+	}>(() => {
+		const savedTasks = localStorage.getItem("downloadTasks");
+		return savedTasks ? JSON.parse(savedTasks) : {};
+	});
+
+	useEffect(() => {
+		localStorage.setItem("downloadTasks", JSON.stringify(downloadTasks));
+	}, [downloadTasks]);
 
 	const GetTasksStatus = () => {
 		Object.entries(downloadTasks).forEach(([instanceId, task]) => {
@@ -100,7 +108,22 @@ export default function UserInstances(props: Props) {
 			});
 	};
 
-	const handleClick = (type: "start" | "stop" | "download", id: number) => {
+	const DeleteInstance = (id: number) => {
+		AxiosInstance.delete(`instances/${id}/`)
+			.then((response) => {
+				setAlert(response.data.message, "success");
+				props.setRefresh(true);
+			})
+			.catch((error: any) => {
+				console.log(error);
+				setAlert(error.message, "error");
+			});
+	};
+
+	const handleClick = (
+		type: "start" | "stop" | "download" | "delete",
+		id: number
+	) => {
 		switch (type) {
 			case "start":
 				// Start the instance
@@ -111,25 +134,36 @@ export default function UserInstances(props: Props) {
 			case "download":
 				StartDownload(id);
 				break;
+			case "delete":
+				DeleteInstance(id);
+				break;
 		}
 	};
 	return (
 		<Stack spacing={2} alignItems="center" width="100%">
-			{props.userInstances.map((instance) => (
-				<InstanceCard
-					key={instance.id}
-					id={instance.id}
-					title={instance.name}
-					port={instance.port}
-					preset={instance.preset}
-					is_running={instance.is_running}
-					is_ready={instance.is_ready}
-					handleClick={handleClick}
-					downloadTask={
-						downloadTasks[instance.id] ? downloadTasks[instance.id] : undefined
-					}
-				/>
-			))}
+			{props.userInstances.length > 0 ? (
+				props.userInstances.map((instance) => (
+					<InstanceCard
+						key={instance.id}
+						id={instance.id}
+						title={instance.name}
+						port={instance.port}
+						preset={instance.preset}
+						is_running={instance.is_running}
+						is_ready={instance.is_ready}
+						handleClick={handleClick}
+						downloadTask={
+							downloadTasks[instance.id]
+								? downloadTasks[instance.id]
+								: undefined
+						}
+					/>
+				))
+			) : (
+				<Typography variant="body1" color="textSecondary" fontSize={20}>
+					Brak instancji użytkownika.
+				</Typography>
+			)}
 		</Stack>
 	);
 }

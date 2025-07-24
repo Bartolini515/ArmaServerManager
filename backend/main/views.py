@@ -53,14 +53,13 @@ class LoginViewset(viewsets.ViewSet):
         else:
             return Response(serializer.errors, status=400)
 
-class AccountViewset(viewsets.ViewSet):
+class AccountViewset(viewsets.GenericViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProfileSerializer
     queryset = Profile.objects.all()
     
     def list(self, request):
-        queryset = Profile.objects.all()
-        serializer = self.serializer_class(queryset, many=True)
+        serializer = self.serializer_class(self.queryset, many=True)
         return Response(serializer.data)
     
     @action(detail=False, methods=["post"], url_path="change_password")
@@ -85,8 +84,53 @@ class AccountViewset(viewsets.ViewSet):
         data = serializer.data
             
         return Response({'user': data, 'isAdmin': user.is_staff})
+    
+class ModeratorPanelViewset(viewsets.ViewSet):
+    permission_classes = [permissions.IsAdminUser]
+    
+    
+    # Sekcja profili
+    @action(detail=False, methods=["get"], url_path="user")
+    def listProfiles(self, request):
+        queryset = Profile.objects.all()
+        serializer = Profiles_moderatorPanelSerializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=["get"], url_path="user")
+    def requestProfile(self, request, pk=None):
+        queryset = Profile.objects.get(pk=pk)
+        serializer = Profiles_moderatorPanelSerializer(queryset)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=["put"], url_path="user/update")
+    def updateProfile(self, request, pk=None):
+        queryset = Profile.objects.get(pk=pk)
+        serializer = Profiles_moderatorPanelSerializer(queryset, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return message_response(serializer.data, "Profil zaktualizowany")
+        else:
+            return Response(serializer.errors, status=400)
+        
+    @action(detail=False, methods=["post"], url_path="user/create")
+    def createProfile(self, request):
+        serializer = Profiles_moderatorPanelSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return message_response(serializer.data, "Dodano użytkownika")
+        else:
+            return Response(serializer.errors, status=400)
 
-class ServicesViewset(viewsets.ModelViewSet):
+    @action(detail=True, methods=["delete"], url_path="user/delete")
+    def deleteProfile(self, request, pk=None):
+        try:
+            user = Profile.objects.get(pk=pk)
+        except Profile.DoesNotExist:
+            return Response({"message": "Użytkownik nie istnieje"}, status=404)
+        user.delete()
+        return Response({"message": "Użytkownik usunięty"})
+
+class ServicesViewset(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
     
     @action(detail=False, methods=["get"], url_path="get_system_info")
@@ -145,24 +189,35 @@ class InstancesViewset(viewsets.ModelViewSet):
             create_logger = Logger(name="create", user=user.username)
             mod_paths = preset_parser(instance.preset.path, log_callback=create_logger.log)
             generate_server_config(user.username, user.password, config.get("paths.arma3"), log_callback=create_logger.log)
-            generate_sh_file(instance.name, instance.port.port_number, user.username, mod_paths, config.get("paths.mods_directory"), config.get("paths.arma3"), log_callback=create_logger.log)
+            start_file_path = generate_sh_file(instance.name, instance.port.port_number, user.username, mod_paths, config.get("paths.mods_directory"), config.get("paths.arma3"), log_callback=create_logger.log)
+            instance.start_file_path = start_file_path
+            instance.save()
             create_logger.write_log_to_file()
 
             return message_response(self.serializer_class(instance).data, "Instancja została utworzona")
         else:
             return Response(serializer.errors, status=400)
-    @action(detail=True, methods=["delete"], url_path="delete")
-    def delete(self, request, pk=None):
-        instance = Instances.objects.get(pk=pk)
+    
+    def destroy(self, request, pk=None):
+        try:
+            instance = self.get_object()
+        except Instances.DoesNotExist:
+            return Response({"message": "Instancja nie została znaleziona"}, status=404)
+        
         if instance.is_running:
             return Response({"message": "Nie można usunąć działającej instancji"}, status=400)
-        port = instance.port
-        if port:
-            port.is_available = True
-            port.save()
-        instance.preset.delete()
-        instance.delete()
-        return Response(status=204)
+        
+        with transaction.atomic():
+            port = instance.port
+            if port:
+                port.is_available = True
+                port.save()
+            instance.preset.delete()
+            if instance.start_file_path and os.path.exists(instance.start_file_path):
+                os.remove(instance.start_file_path)
+            instance.delete()
+            
+        return Response({"message": "Instancja została usunięta"}, status=200)
     
     @action(detail=True, methods=["post"], url_path="start")
     def start(self, request, pk=None):

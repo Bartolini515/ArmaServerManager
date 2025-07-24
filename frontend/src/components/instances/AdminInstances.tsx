@@ -6,6 +6,7 @@ interface Instance {
 	name: string;
 	user: string;
 	preset: string;
+	start_file_path: string;
 	created_at: string;
 	is_admin_instance: boolean;
 	is_ready: boolean;

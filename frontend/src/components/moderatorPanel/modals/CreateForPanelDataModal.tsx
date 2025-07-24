@@ -2,14 +2,14 @@ import Backdrop from "@mui/material/Backdrop";
 import Box from "@mui/material/Box";
 import Modal from "@mui/material/Modal";
 import Fade from "@mui/material/Fade";
-import AxiosInstance from "../AxiosInstance";
+import AxiosInstance from "../../AxiosInstance";
 import { Button, Typography } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import MyTextField from "../../UI/forms/MyTextField";
+import MyTextField from "../../../UI/forms/MyTextField";
 import { useForm } from "react-hook-form";
-import MyButton from "../../UI/forms/MyButton";
-import { useAlert } from "../../contexts/AlertContext";
-import MyDropzone from "../../UI/forms/MyDropzone";
+import MyButton from "../../../UI/forms/MyButton";
+import { useAlert } from "../../../contexts/AlertContext";
+import MyPassField from "../../../UI/forms/MyPassField";
 
 const style = {
 	position: "absolute",
@@ -28,34 +28,54 @@ const style = {
 };
 
 interface Props {
+	option: {
+		name: string;
+		label: string;
+		labelSingle: string;
+		headers: string[];
+		buttonAdd: string;
+		forms: {
+			first_field: {
+				title: string;
+				label: string;
+				name: string;
+				helperText?: string;
+			};
+		};
+		payload: (data: any) => any;
+	};
 	open: boolean;
-	onClose: () => void;
+	setOpen: any;
+	setRefresh: any;
 }
 
 interface FormData {
-	name: string;
-	preset: File | null;
+	username?: string;
+	password?: string;
 }
 
-export default function CreateInstanceModal(props: Props) {
-	const { handleSubmit, control, setError, clearErrors, setValue } =
-		useForm<FormData>({
-			defaultValues: {
-				name: "",
-				preset: null,
-			},
-		});
+export default function CreateDataModerator(props: Props) {
+	const { handleSubmit, control, setError, clearErrors } = useForm<FormData>({
+		defaultValues: {
+			username: "",
+			password: "",
+		},
+	});
+
+	const handleClose = () => {
+		props.setOpen(false);
+		props.setRefresh(true);
+	};
 
 	const { setAlert } = useAlert();
 
 	const submission = (data: FormData) => {
-		AxiosInstance.post(`/instances/`, data, {
-			headers: {
-				"Content-Type": "multipart/form-data",
-			},
-		})
+		AxiosInstance.post(
+			`moderator_panel/${props.option.name}/create/`,
+			props.option.payload(data)
+		)
 			.then((response) => {
-				props.onClose();
+				handleClose();
 				setAlert(response.data.message, "success");
 			})
 			.catch((error: any) => {
@@ -78,17 +98,13 @@ export default function CreateInstanceModal(props: Props) {
 			});
 	};
 
-	const handleClick = () => {
-		clearErrors();
-	};
-
 	return (
 		<>
 			<Modal
 				aria-labelledby="transition-modal-title"
 				aria-describedby="transition-modal-description"
 				open={props.open}
-				onClose={props.onClose}
+				onClose={handleClose}
 				closeAfterTransition
 				slots={{ backdrop: Backdrop }}
 				slotProps={{
@@ -112,7 +128,7 @@ export default function CreateInstanceModal(props: Props) {
 								variant="h5"
 								component="h2"
 							>
-								Stwórz instancje
+								Stwórz {props.option.labelSingle}
 							</Typography>
 						</Box>
 						<Button
@@ -124,7 +140,7 @@ export default function CreateInstanceModal(props: Props) {
 								padding: "0px",
 								minWidth: "0px",
 							}}
-							onClick={props.onClose}
+							onClick={handleClose}
 						>
 							<CloseIcon sx={{ color: "red" }} fontSize="medium" />
 						</Button>
@@ -138,71 +154,47 @@ export default function CreateInstanceModal(props: Props) {
 									marginBottom: "20px",
 								}}
 							>
-								<Box
-									sx={{
-										fontWeight: "bold",
-										alignContent: "center",
-									}}
-								>
-									Nazwa instancji
+								<Box sx={{ fontWeight: "bold", alignContent: "center" }}>
+									{props.option.forms.first_field.title}:{" "}
 								</Box>
 								<Box sx={{ marginLeft: "10px" }}>
 									<MyTextField
-										label="Nazwa instancji"
-										name="name"
+										label={props.option.forms.first_field.label}
+										name={props.option.forms.first_field.name}
 										control={control}
+										helperText={props.option.forms.first_field.helperText}
 									/>
 								</Box>
 							</Box>
 
-							<Box
-								sx={{
-									boxShadow: 3,
-									padding: "20px",
-									display: "flex",
-									flexDirection: "column",
-									marginBottom: "20px",
-								}}
-							>
-								<Typography
-									id="transition-modal-title"
-									variant="h5"
-									component="h2"
-									sx={{
-										marginBottom: "15px",
-										textAlign: "center",
-									}}
-								>
-									Preset modyfikacji
-								</Typography>
-
-								<MyDropzone
-									label={"Prześlij preset"}
-									name={"preset"}
-									control={control}
-									multiple={false}
-									maxFiles={1}
-									onSubmit={(files) => {
-										if (files && files.length > 0) {
-											setValue("preset", files[0]);
-										}
-									}}
-									accept={["text/html"]}
-									style={{
-										width: "100%",
-										minHeight: "200px",
-										textAlign: "center",
-										display: "flex",
-										justifyContent: "center",
-										alignItems: "center",
-									}}
-								></MyDropzone>
-							</Box>
-
+							{props.option.name === "user" && (
+								<>
+									<Box
+										sx={{
+											boxShadow: 3,
+											padding: "20px",
+											display: "flex",
+											flexDirection: "row",
+											marginBottom: "20px",
+										}}
+									>
+										<Box sx={{ fontWeight: "bold", alignContent: "center" }}>
+											Hasło:{" "}
+										</Box>
+										<Box sx={{ marginLeft: "10px" }}>
+											<MyPassField
+												label="Hasło"
+												name="password"
+												control={control}
+											/>
+										</Box>
+									</Box>
+								</>
+							)}
 							<MyButton
 								label="Stwórz"
 								type="submit"
-								onClick={handleClick}
+								onClick={() => clearErrors()}
 								style={{ width: "100%" }}
 							/>
 						</form>
