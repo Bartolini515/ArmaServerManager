@@ -1,11 +1,16 @@
 import os
 
 # TODO: Refractor and integrate
-def lowercase_addons_directory(wid, workshop_dir=None):
-    if not workshop_dir:
-        workshop_dir = os.path.join(os.getenv('ARMA'), os.getenv('WORKSHOP'))
-    addons_path_lower = os.path.join(workshop_dir, str(wid), 'addons')
-    addons_path_upper = os.path.join(workshop_dir, str(wid), 'Addons')
+def lowercase_addons_directory(wid: str, source_dir: str, log_callback: callable = None) -> None:
+    """Lowercases the names of all files and directories in the addons directory of a mod.
+
+    Args:
+        wid (str): The workshop ID of the mod.
+        source_dir (str): The base directory where the mod is located.
+        log_callback (callable, optional): A callback function for logging messages. Defaults to None.
+    """
+    addons_path_lower = os.path.join(source_dir, str(wid), 'addons')
+    addons_path_upper = os.path.join(source_dir, str(wid), 'Addons')
 
     if os.path.exists(addons_path_upper):
         os.rename(addons_path_upper, addons_path_lower)
@@ -31,5 +36,8 @@ def lowercase_addons_directory(wid, workshop_dir=None):
                     dst = os.path.join(root, name.lower())
                     if src != dst:
                         os.rename(src, dst)
+        if log_callback:
+            log_callback(f"Lowercased addon directory for mod {wid}")
     else:
-            return f"No 'addons' or 'Addons' directory found for mod {wid}. Skipping."
+        if log_callback:
+            log_callback(f"Addons directory not found for mod {wid}")

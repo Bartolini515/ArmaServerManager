@@ -391,6 +391,6 @@ $RECYCLE.BIN/
 backend/data/*
 !backend/data/.gitkeep
 
-# !media
-# backend/media/*
-# !backend/media/.gitkeep
+!media
+backend/media/*
+!backend/media/.gitkeep

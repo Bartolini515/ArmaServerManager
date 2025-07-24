@@ -13,6 +13,7 @@ interface Props {
 	style?: import("@mui/system").SxProps<import("@mui/material").Theme>;
 	onSubmit?: (files: File[]) => void;
 	rest?: any;
+	helperText?: string;
 }
 
 export default function MyDropzone(props: Props) {
@@ -20,7 +21,7 @@ export default function MyDropzone(props: Props) {
 		<Controller
 			name={props.name}
 			control={props.control}
-			render={({ field: { onChange } }) => (
+			render={({ field: { onChange }, fieldState: { error } }) => (
 				<Dropzone
 					multiple={props.multiple}
 					maxFiles={props.multiple}
@@ -32,6 +33,8 @@ export default function MyDropzone(props: Props) {
 					onSubmit={props.onSubmit}
 					accept={props.accept}
 					style={props.style}
+					error={error}
+					helperText={error ? error.message : props.helperText}
 					{...props.rest}
 				/>
 			)}
@@ -74,6 +77,8 @@ const Dropzone: FC<{
 	style?: React.CSSProperties;
 	onSubmit?: (files: File[]) => void;
 	accept?: string | string[];
+	error?: boolean;
+	helperText?: string;
 }> = ({
 	multiple,
 	maxFiles,
@@ -81,6 +86,8 @@ const Dropzone: FC<{
 	style: customStyle,
 	onSubmit,
 	accept,
+	error,
+	helperText,
 	...rest
 }) => {
 	const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
@@ -131,6 +138,15 @@ const Dropzone: FC<{
 							<li key={index}>{file.name}</li>
 						))}
 					</ul>
+				)}
+			</div>
+			<div>
+				{(helperText || error) && (
+					<p
+						style={{ color: error ? "#d32f2f" : "#000000de", fontSize: "12px" }}
+					>
+						{helperText || "Wystąpił błąd podczas przesyłania plików."}
+					</p>
 				)}
 			</div>
 		</div>

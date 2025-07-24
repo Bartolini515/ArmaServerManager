@@ -6,6 +6,7 @@ router = DefaultRouter(trailing_slash=True)
 router.register('login', LoginViewset, basename='login')
 router.register('account', AccountViewset, basename='account')
 router.register('services', ServicesViewset, basename='services')
+router.register('instances', InstancesViewset, basename='instances')
 urlpatterns = router.urls
 if not settings.DEBUG:
     urlpatterns = [url for url in urlpatterns if url.name != 'api-root']

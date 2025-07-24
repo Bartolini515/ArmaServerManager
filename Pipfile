@@ -16,6 +16,8 @@ pymysql = {extras = ["rsa"], version = "*"}
 requests = "*"
 beautifulsoup4 = "*"
 psutil = "*"
+celery = "*"
+redis = "*"
 
 [dev-packages]
 

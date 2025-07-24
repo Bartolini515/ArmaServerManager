@@ -25,7 +25,8 @@ urlpatterns = [
     path('__debug__/', include(debug_toolbar.urls)),
     path('api/admin/', admin.site.urls),
     path('api/', include('main.urls')),
-    # path('api/auth/', include('knox.urls'))
+    # path('api/auth/', include('knox.urls')),
+    path('api-auth/', include('rest_framework.urls', namespace='rest_framework')),
     
     path('api/logout/', knox_views.LogoutView.as_view(), name='knox_logout'), 
 ]

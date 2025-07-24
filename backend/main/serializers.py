@@ -35,3 +35,11 @@ class Password_changeSerializer(serializers.Serializer):
         ret = super().to_representation(instance)
         ret.pop('password', None)
         return ret
+
+class InstanceSerializer(serializers.ModelSerializer):
+    user = ProfileSerializer(read_only=True)
+    port = serializers.StringRelatedField()
+    
+    class Meta:
+        model = Instances
+        fields = ('id', 'name', 'user', 'preset', 'created_at', 'is_admin_instance', 'is_ready', 'is_running', 'port')

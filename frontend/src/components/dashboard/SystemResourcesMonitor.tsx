@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import Paper from "@mui/material/Paper";
-import { Divider, Stack } from "@mui/material";
+import { Divider, Skeleton, Stack } from "@mui/material";
 import CircularProgressWithLabel from "../../UI/feedback/CircularProgressWithLabel";
 // import { getSystemInfo } from "../../services/systemService";
 import { useInterval } from "../../hooks/use-interval";
@@ -8,11 +8,6 @@ import { humanFileSize } from "../../util/util";
 import type { CircularProgressProps } from "@mui/material/CircularProgress/CircularProgress";
 import AxiosInstance from "../AxiosInstance";
 import { useAlert } from "../../contexts/AlertContext";
-
-interface Props {
-	loading: boolean;
-	setLoading: (loading: boolean) => void;
-}
 
 interface SystemInfo {
 	cpuUsage: number;
@@ -24,7 +19,8 @@ interface SystemInfo {
 	osName: string;
 }
 
-export default function SystemResourcesMonitor(props: Props) {
+export default function SystemResourcesMonitor() {
+	const [loading, setLoading] = useState(true);
 	const [systemInfo, setSystemInfo] = useState<SystemInfo>({
 		cpuUsage: 0,
 		memoryLeft: 0,
@@ -47,7 +43,7 @@ export default function SystemResourcesMonitor(props: Props) {
 		AxiosInstance.get("services/get_system_info/")
 			.then((response) => {
 				setSystemInfo(response.data);
-				props.setLoading(false);
+				setLoading(false);
 			})
 			.catch((error: any) => {
 				console.log(error);
@@ -75,7 +71,9 @@ export default function SystemResourcesMonitor(props: Props) {
 		return "error";
 	};
 
-	return (
+	return loading ? (
+		<Skeleton variant="rectangular" height={200} />
+	) : (
 		<Paper>
 			<Stack
 				direction={{ xs: "column", sm: "row" }}

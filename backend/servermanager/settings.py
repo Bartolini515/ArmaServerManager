@@ -162,8 +162,8 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # ]
 
 # Media files
-# MEDIA_URL = '/media/'
-# MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
@@ -191,11 +191,34 @@ CSRF_TRUSTED_ORIGINS = [
 # User model and auth
 AUTH_USER_MODEL = "main.Profile"
 
-AUTHENTICATION_BACKEND = [
-    'main.auth_backend.EmailAuthBackend'
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
 ]
 
 # REST Framework
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': ('knox.auth.TokenAuthentication',)
+    'DEFAULT_AUTHENTICATION_CLASSES': ('knox.auth.TokenAuthentication', 'rest_framework.authentication.SessionAuthentication',)
+}
+
+# Celery Configuration
+CELERY_BROKER_URL = 'redis://127.0.0.1:6379'
+CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+
+# Celery Task Routing
+CELERY_TASK_QUEUES = {
+    'celery': {
+        'exchange': 'celery',
+        'binding_key': 'celery',
+    },
+    'download_queue': {
+        'exchange': 'download_queue',
+        'binding_key': 'download_queue',
+    },
+}
+
+CELERY_TASK_ROUTES = {
+    'main.tasks.download_mods_task': {'queue': 'download_queue'},
 }

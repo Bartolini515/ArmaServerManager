@@ -3,6 +3,11 @@ import os
 
 class Config:
     def __init__(self, file_path: str):
+        """Initializes the Config object and loads the configuration from a JSON file.
+
+        Args:
+            file_path (str): The path to the configuration file.
+        """
         if not os.path.isabs(file_path):
             # Construct an absolute path relative to this script's location
             script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -13,7 +18,7 @@ class Config:
             
         self.config = {}
         if os.path.exists(self.file_path):
-            self.load()
+            self._load()
 
     def _load(self):
         with open(self.file_path, 'r') as file:
@@ -60,3 +65,6 @@ class Config:
         self._deep_update(self.config, new_config)
         with open(self.file_path, 'w') as file:
             json.dump(self.config, file, indent=2, ensure_ascii=False)
+            
+# Create a single instance of Config to be used throughout the application
+config = Config('../../data/config.json')
