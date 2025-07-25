@@ -75,7 +75,7 @@ export default function UserInstances(props: Props) {
 				})
 				.catch((error: any) => {
 					console.log(error);
-					setAlert(error.message, "error");
+					setAlert(error.response.data.message || error.message, "error");
 					setDownloadTasks((prev) => ({
 						...prev,
 						[Number(instanceId)]: {
@@ -98,13 +98,13 @@ export default function UserInstances(props: Props) {
 					[id]: {
 						taskId: response.data.task_id,
 						state: "PROGRESS",
-						status: "Download started",
+						status: "Rozpoczęto pobieranie",
 					},
 				}));
 			})
 			.catch((error: any) => {
 				console.log(error);
-				setAlert(error.message, "error");
+				setAlert(error.response.data.message || error.message, "error");
 			});
 	};
 
@@ -116,7 +116,7 @@ export default function UserInstances(props: Props) {
 			})
 			.catch((error: any) => {
 				console.log(error);
-				setAlert(error.message, "error");
+				setAlert(error.response.data.message || error.message, "error");
 			});
 	};
 
@@ -161,7 +161,7 @@ export default function UserInstances(props: Props) {
 				))
 			) : (
 				<Typography variant="body1" color="textSecondary" fontSize={20}>
-					Brak instancji użytkownika.
+					Brak instancji użytkownika
 				</Typography>
 			)}
 		</Stack>

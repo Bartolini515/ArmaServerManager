@@ -129,6 +129,21 @@ class ModeratorPanelViewset(viewsets.ViewSet):
             return Response({"message": "Użytkownik nie istnieje"}, status=404)
         user.delete()
         return Response({"message": "Użytkownik usunięty"})
+    
+    # Sekcja configu
+    @action(detail=False, methods=["get"], url_path="config")
+    def getConfig(self, request):
+        serializer = ConfigSerializer(config.config)
+        config_data = serializer.data
+        return Response(config_data)
+    
+    @action(detail=False, methods=["put"], url_path="config/update")
+    def updateConfig(self, request):
+        serializer = ConfigSerializer(data=request.data)
+        if serializer.is_valid():
+            config.update(serializer.validated_data)
+            return Response({"message": "Konfiguracja zaktualizowana"})
+        return Response(serializer.errors, status=400)
 
 class ServicesViewset(viewsets.ViewSet):
     permission_classes = [permissions.IsAuthenticated]
@@ -175,11 +190,11 @@ class InstancesViewset(viewsets.ModelViewSet):
         serializer = self.serializer_class(data=request.data)
         if serializer.is_valid():
             if user.instances.count() >= 5 and not user.is_staff:
-                return Response({"message": "Przekroczono limit 5 instancji"}, status=400)
+                return Response({"message": "Przekroczono limit 5 instancji"}, status=403)
             with transaction.atomic():
                 available_port = Ports.objects.select_for_update().filter(is_available=True).first()
                 if not available_port:
-                    return Response({"message": "Brak dostępnych portów"}, status=400)
+                    return Response({"message": "Brak dostępnych portów"}, status=403)
 
                 instance = serializer.save(user=user, port=available_port)
                 
@@ -188,7 +203,10 @@ class InstancesViewset(viewsets.ModelViewSet):
             
             create_logger = Logger(name="create", user=user.username)
             mod_paths = preset_parser(instance.preset.path, log_callback=create_logger.log)
-            generate_server_config(user.username, user.password, config.get("paths.arma3"), log_callback=create_logger.log)
+            if not user.server_config:
+                server_config_file_path = generate_server_config(user.username, user.password, config.get("paths.arma3"), log_callback=create_logger.log)
+                user.server_config = server_config_file_path
+                user.save()
             start_file_path = generate_sh_file(instance.name, instance.port.port_number, user.username, mod_paths, config.get("paths.mods_directory"), config.get("paths.arma3"), log_callback=create_logger.log)
             instance.start_file_path = start_file_path
             instance.save()
@@ -208,13 +226,6 @@ class InstancesViewset(viewsets.ModelViewSet):
             return Response({"message": "Nie można usunąć działającej instancji"}, status=400)
         
         with transaction.atomic():
-            port = instance.port
-            if port:
-                port.is_available = True
-                port.save()
-            instance.preset.delete()
-            if instance.start_file_path and os.path.exists(instance.start_file_path):
-                os.remove(instance.start_file_path)
             instance.delete()
             
         return Response({"message": "Instancja została usunięta"}, status=200)

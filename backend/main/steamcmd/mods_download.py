@@ -1,7 +1,7 @@
 import os
 import subprocess
 from time import sleep, time
-from .process_output import stream_process_output
+from ..utils.process_output import stream_process_output
 from ..utils.logger import Logger
 from ..utils.config import config
 from ..workaround.cache_deletion import delete_steamcmd_appcache

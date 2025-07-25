@@ -68,7 +68,7 @@ export default function ModeratorPanelDataManagementTable(props: Props) {
 			})
 			.catch((error: any) => {
 				console.log(error);
-				setAlert(error.message, "error");
+				setAlert(error.response.data.message || error.message, "error");
 			});
 	};
 
@@ -84,7 +84,7 @@ export default function ModeratorPanelDataManagementTable(props: Props) {
 			})
 			.catch((error: any) => {
 				console.log(error);
-				setAlert(error.message, "error");
+				setAlert(error.response.data.message || error.message, "error");
 			});
 	};
 

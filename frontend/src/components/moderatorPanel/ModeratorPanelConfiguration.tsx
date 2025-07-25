@@ -4,26 +4,37 @@ import { useState } from "react";
 import ConfigModeratorPanelModal from "./modals/ConfigModeratorPanelModal";
 
 export default function ModeratorPanelConfiguration() {
-	const [option, setOption] = useState<keyof typeof optionsMap>("schedule");
+	const [option, setOption] = useState<keyof typeof optionsMap>("config");
 	const [open, setOpen] = useState(false);
 
 	const optionsMap = {
-		schedule: {
-			name: "schedule",
-			axiosUrl: "schedule/create/",
-			labelModal: "Stwórz plan lekcji",
-			buttonSend: "Stwórz plan lekcji",
+		config: {
+			name: "config",
+			axiosUrl: "config/update/",
+			labelModal: "Ustaw konfigurację",
+			buttonSend: "Ustaw konfigurację",
 			forms: {
 				first_field: {
-					title: "URL",
-					label: "Wprowadź URL",
-					name: "url",
+					title: null,
+					label: "Ścieżka do folderu steamcmd",
+					name: "steamcmd",
 					helperText:
-						"Podaj URL do planu lekcji, np. 'https://plan.zset.leszno.pl/'",
+						"Podaj ścieżkę do folderu steamcmd, np. '/path/to/steamcmd'",
 				},
 			},
 			payload: (data: any) => ({
-				url: data.url,
+				paths: {
+					steamcmd: data.steamcmd,
+					arma3: data.arma3,
+					mods_directory: data.mods_directory,
+					logs_directory: data.logs_directory,
+					download_directory: data.download_directory,
+				},
+				steam_auth: {
+					username: data.username,
+					password: data.password,
+					shared_secret: data.shared_secret,
+				},
 			}),
 		},
 	};
@@ -70,11 +81,11 @@ export default function ModeratorPanelConfiguration() {
 				}}
 			>
 				<MyButton
-					label={"Stwórz plan lekcji"}
+					label={"Ustaw config"}
 					type={"button"}
 					variant="outlined"
 					color="primary"
-					onClick={() => handleClick("schedule")}
+					onClick={() => handleClick("config")}
 				/>
 			</Box>
 			{open && (

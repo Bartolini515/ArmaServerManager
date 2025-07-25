@@ -5,6 +5,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 import re
+import base64
+import os
 User = get_user_model()
 
 # ProfilesSerializers
@@ -67,6 +69,49 @@ class Profiles_moderatorPanelSerializer(serializers.ModelSerializer):
     class Meta:
         model = Profile
         fields = ("id" , "username", "last_login", "password")
+        
+class ConfigSerializer(serializers.Serializer):
+    paths = serializers.DictField(child=serializers.CharField(), required=True)
+    steam_auth = serializers.DictField(child=serializers.CharField(allow_blank=True), required=True)
+    
+    def validate_paths(self, value):
+        # Place for validation logic in the future
+        return value
+    
+    def validate_steam_auth(self, value):
+        # Validate shared_secret if provided
+        shared_secret = value.get('shared_secret', '')
+        if shared_secret and not self._is_valid_base64(shared_secret):
+            raise serializers.ValidationError({
+                'shared_secret': ["Nieprawidłowy format. Oczekiwano ciągu base64"]
+            })
+        
+        return value
+    
+    def _is_valid_base64(self, value):
+        """Check if the value is valid base64 encoded string."""
+        try:
+            # Base64 strings should only contain A-Z, a-z, 0-9, +, /, and = for padding
+            if not re.match(r'^[A-Za-z0-9+/]*={0,2}$', value):
+                return False
+            # Try to decode to verify it's valid base64
+            base64.b64decode(value, validate=True)
+            return True
+        except Exception:
+            return False
+    
+    def to_representation(self, instance):
+        """Hide sensitive information in the response."""
+        ret = super().to_representation(instance)
+        
+        # Mask sensitive fields
+        if 'steam_auth' in ret and isinstance(ret['steam_auth'], dict):
+            if 'password' in ret['steam_auth'] and ret['steam_auth']['password']:
+                ret['steam_auth']['password'] = '*' * 8
+            if 'shared_secret' in ret['steam_auth'] and ret['steam_auth']['shared_secret']:
+                ret['steam_auth']['shared_secret'] = '*' * 8
+        
+        return ret
 
 # InstancesSerializers
 class InstanceSerializer(serializers.ModelSerializer):

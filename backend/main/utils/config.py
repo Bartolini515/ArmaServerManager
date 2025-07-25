@@ -17,8 +17,31 @@ class Config:
             self.file_path = file_path
             
         self.config = {}
-        if os.path.exists(self.file_path):
+        if not os.path.exists(self.file_path):
+            self._create_default_config()
+        else:
             self._load()
+
+    def _create_blank_config(self):
+        """Creates a blank configuration file"""
+        default_config = {
+            "paths": {
+                "steamcmd": "",
+                "arma3": "",
+                "mods_directory": "",
+                "logs_directory": "",
+                "download_directory": ""
+            },
+            "steam_auth": {
+                "username": "",
+                "password": "",
+                "shared_secret": ""
+            }
+        }
+
+        with open(self.file_path, 'w') as file:
+            json.dump(default_config, file, indent=2, ensure_ascii=False)
+        self.config = default_config
 
     def _load(self):
         with open(self.file_path, 'r') as file:
