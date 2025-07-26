@@ -3,11 +3,21 @@ import threading
 
 def reader_thread(pipe, log_callback: callable = None) -> None:
     try:
-        for line in iter(pipe.readline, b''):
+        while True:
+            line = pipe.readline()
+            if not line:
+                break
+            
+            processed_line = ""
+            if isinstance(line, bytes):
+                processed_line = line.decode('utf-8', errors='ignore').strip()
+            else: # It's a string
+                processed_line = line.strip()
+
             if log_callback:
-                log_callback(line.decode('utf-8', errors='ignore').strip())
+                log_callback(processed_line)
             else:
-                print(line.decode('utf-8', errors='ignore').strip())
+                print(processed_line)
     finally:
         pipe.close()
 

@@ -16,8 +16,21 @@ interface Props {
 	preset: string;
 	is_running: boolean;
 	is_ready: boolean;
-	handleClick: (type: "start" | "stop" | "download" | "delete", id: number) => void;
+	handleClick: (
+		type: "start" | "stop" | "download" | "delete",
+		id: number
+	) => void;
 	downloadTask?: {
+		taskId: number;
+		state: string;
+		status: string;
+	};
+	startTask?: {
+		taskId: number;
+		state: string;
+		status: string;
+	};
+	stopTask?: {
 		taskId: number;
 		state: string;
 		status: string;
@@ -72,12 +85,22 @@ export default function InstanceCard(props: Props) {
 			<CardActions sx={{ justifyContent: "right" }}>
 				{props.is_ready ? (
 					props.is_running ? (
-						<MyButton
-							label={"Zatrzymaj"}
-							type={"button"}
-							color={"error"}
-							onClick={() => props.handleClick("stop", props.id)}
-						/>
+						props.stopTask && props.stopTask.state === "PROGRESS" ? (
+							<Typography variant="body2" color="textSecondary">
+								{props.stopTask.status}
+							</Typography>
+						) : (
+							<MyButton
+								label={"Zatrzymaj"}
+								type={"button"}
+								color={"error"}
+								onClick={() => props.handleClick("stop", props.id)}
+							/>
+						)
+					) : props.startTask && props.startTask.state === "PROGRESS" ? (
+						<Typography variant="body2" color="textSecondary">
+							{props.startTask.status}
+						</Typography>
 					) : (
 						<MyButton
 							label={"Uruchom"}

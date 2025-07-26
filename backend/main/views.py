@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from .models import *
 from django.contrib.auth import get_user_model, authenticate
 from django.utils import timezone
+from django.core.files.base import ContentFile
 from knox.models import AuthToken
 import psutil
 import platform
@@ -15,7 +16,7 @@ from .modpreset.start_files import generate_sh_file, check_sh_file_exists, gener
 from .utils.config import config
 from .utils.logger import Logger
 from celery.result import AsyncResult
-from .tasks import download_mods_task
+from .tasks import download_mods_task, start_server_task, stop_server_task
 User = get_user_model()
 
 def message_response(data, message="Operacja się powiodła"):
@@ -242,21 +243,56 @@ class InstancesViewset(viewsets.ModelViewSet):
 
         if instance.is_running:
             return Response({"message": "Instancja jest już uruchomiona"}, status=400)
+        
+        if self.queryset.filter(user=user, is_running=True).exists():
+            return Response({"message": "Nie można posiadać uruchomionej więcej niż jednej instancji"}, status=400)
+        
+        if not instance.log_file:
+            log_filename = f"log_file.txt"
+            log_content = f"Log file for instance '{instance.name}' created at {timezone.now()}.\n"
+            content_file = ContentFile(log_content.encode('utf-8'), name=log_filename)
+            instance.log_file.save(log_filename, content_file, save=True)
 
         workshop_ids = preset_parser(instance.preset.path, log_callback=start_logger.log)
         mods_dir = config.get("paths.mods_directory")
         if check_installed(wids=workshop_ids, mods_dir=mods_dir, log_callback=start_logger.log)[1]:
             start_logger.write_log_to_file()
             instance.is_ready = False
-            return Response({"message": "Niektóre mody są nieinstalowane. Proszę je najpierw pobrać."}, status=400)
+            return Response({"message": "Niektóre mody są niezainstalowane. Proszę je najpierw pobrać."}, status=400)
         if not check_sh_file_exists(instance.name, log_callback=start_logger.log):
             start_logger.write_log_to_file()
             return Response({"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"}, status=400)
 
-        # instance.start() # Placeholder
+        try:
+            task = start_server_task.delay(
+                instance_id=instance.id,
+                arma3_dir=config.get("paths.arma3"),
+            )
+        except Exception as e:
+            start_logger.log(f"Nie udało się rozpocząć zadania uruchamiania: {str(e)}")
+            start_logger.write_log_to_file()
+            return Response({"message": f"Nie udało się rozpocząć zadania uruchamiania: {str(e)}"}, status=500)
         start_logger.write_log_to_file()
-        return Response({"message": "Instancja została uruchomiona"})
-    
+        return Response({"task_id": task.id}, status=202)
+
+    @action(detail=True, methods=["post"], url_path="stop")
+    def stop(self, request, pk=None):
+        try:
+            instance = Instances.objects.get(pk=pk)
+        except Instances.DoesNotExist:
+            return Response({"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"}, status=404)
+
+        if not instance.is_running:
+            return Response({"message": "Instancja jest już zatrzymana"}, status=400)
+
+        try:
+            task = stop_server_task.delay(
+                instance_id=instance.id
+            )
+        except Exception as e:
+            return Response({"message": f"Nie udało się rozpocząć zadania zatrzymania: {str(e)}"}, status=500)
+        return Response({"task_id": task.id}, status=202)
+
     @action(detail=True, methods=['post'], url_path='download_mods')
     def download_mods(self, request, pk=None):
         instance = Instances.objects.get(pk=pk)

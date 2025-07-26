@@ -52,7 +52,7 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
         )
 
         if return_code != 0:
-            if download_fallback():
+            if download_fallback(mod, appid, login, password, steamcmd_dir, ghost_folder.ghost_folder_path, steamguard, log_callback=logger.log if logger else None):
                 failed_mods.append(mod)
                 if logger:
                     logger.log(f"Failed to download mod {mod}.")

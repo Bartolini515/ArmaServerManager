@@ -50,6 +50,7 @@ class Instances(models.Model):
     log_file = models.FileField(upload_to=user_logs_directory_path, blank=True, null=True)
     start_file_path = models.CharField(max_length=255, blank=True, null=True)
     port = models.OneToOneField('Ports', on_delete=models.CASCADE, related_name='instance')
+    pid = models.IntegerField(null=True, blank=True)
     is_ready = models.BooleanField(default=False)
     is_running = models.BooleanField(default=False)
     is_admin_instance = models.BooleanField(default=False)
