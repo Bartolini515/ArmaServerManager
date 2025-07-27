@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     'corsheaders', # Tool for API support with CORS
     'rest_framework', # Tool for API support with REST
     'knox', # Tool providing additional API protection
+    'django_celery_beat', # Tool for scheduling tasks in Celery
     # MyApps
     'main', # Main application
 ]
@@ -207,6 +208,17 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 
+# Caching
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1", # Use a different DB number than Celery
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+        }
+    }
+}
+
 # Celery Task Routing
 CELERY_TASK_QUEUES = {
     'celery': {
@@ -221,4 +233,12 @@ CELERY_TASK_QUEUES = {
 
 CELERY_TASK_ROUTES = {
     'main.tasks.download_mods_task': {'queue': 'download_queue'},
+}
+
+# Celery Beat Schedule
+CELERY_BEAT_SCHEDULE = {
+    'check-all-server-status': {
+        'task': 'main.tasks.check_all_servers_status_task',
+        'schedule': 1800.0,  # In seconds
+    },
 }

@@ -121,3 +121,26 @@ def stop_server_task(self, instance_id: int) -> dict:
         return {'status': 'Serwer został zatrzymany pomyślnie.'}
     except Exception as e:
         raise e
+    
+@shared_task()
+def check_all_servers_status_task():
+    """Checks the status of all servers and updates their state."""
+    instances = Instances.objects.all()
+    for instance in instances:
+        if instance.pid and psutil.pid_exists(instance.pid):
+            instance.is_running = True
+        else:
+            instance.is_running = False
+            instance.pid = None
+        instance.save()
+    return {'status': 'Status wszystkich serwerów został zaktualizowany.'}
+
+@shared_task()
+def instance_timeout_task(instance_id: int):
+    """Handles the timeout for a specific instance."""
+    try:
+        instance = Instances.objects.get(id=instance_id)
+        if instance.is_running:
+            stop_server_task.delay(instance_id)
+    except Instances.DoesNotExist:
+        pass

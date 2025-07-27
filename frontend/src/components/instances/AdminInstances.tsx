@@ -6,12 +6,14 @@ interface Instance {
 	name: string;
 	user: string;
 	preset: string;
+	log_file: string | null;
 	start_file_path: string;
-	created_at: string;
-	is_admin_instance: boolean;
+	port: number;
+	pid: number;
 	is_ready: boolean;
 	is_running: boolean;
-	port: number;
+	is_admin_instance: boolean;
+	created_at: string;
 }
 
 interface Props {

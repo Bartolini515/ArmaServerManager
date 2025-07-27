@@ -2,14 +2,14 @@ import Backdrop from "@mui/material/Backdrop";
 import Box from "@mui/material/Box";
 import Modal from "@mui/material/Modal";
 import Fade from "@mui/material/Fade";
-import AxiosInstance from "../AxiosInstance";
+import AxiosInstance from "../../AxiosInstance";
 import { Button, Typography } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
-import MyTextField from "../../UI/forms/MyTextField";
+import MyTextField from "../../../UI/forms/MyTextField";
 import { useForm } from "react-hook-form";
-import MyButton from "../../UI/forms/MyButton";
-import { useAlert } from "../../contexts/AlertContext";
-import MyDropzone from "../../UI/forms/MyDropzone";
+import MyButton from "../../../UI/forms/MyButton";
+import { useAlert } from "../../../contexts/AlertContext";
+import MyDropzone from "../../../UI/forms/MyDropzone";
 
 const style = {
 	position: "absolute",

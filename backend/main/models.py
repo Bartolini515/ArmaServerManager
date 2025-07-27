@@ -71,6 +71,12 @@ class Instances(models.Model):
             self.port.save()
         super().delete(*args, **kwargs)
     
+    def get_logs(self):
+        if self.log_file and os.path.exists(self.log_file.path):
+            with open(self.log_file.path, 'r', encoding='utf-8') as file:
+                return file.read()
+        return "Brak logów lub plik nie istnieje."
+    
 class Ports(models.Model):
     port_number = models.IntegerField(unique=True)
     is_available = models.BooleanField(default=True)

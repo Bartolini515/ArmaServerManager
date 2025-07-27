@@ -4,18 +4,21 @@ import { useInterval } from "../../hooks/use-interval";
 import AxiosInstance from "../AxiosInstance";
 import InstanceCard from "./InstanceCard";
 import { Stack, Typography } from "@mui/material";
+import ServerLogsModal from "./modals/ServerLogsModal";
 
 interface Instance {
 	id: number;
 	name: string;
 	user: string;
 	preset: string;
+	log_file: string | null;
 	start_file_path: string;
-	created_at: string;
-	is_admin_instance: boolean;
+	port: number;
+	pid: number;
 	is_ready: boolean;
 	is_running: boolean;
-	port: number;
+	is_admin_instance: boolean;
+	created_at: string;
 }
 
 interface TaskTemplate {
@@ -49,6 +52,17 @@ export default function UserInstances(props: Props) {
 		const savedTasks = localStorage.getItem("stopTasks");
 		return savedTasks ? JSON.parse(savedTasks) : {};
 	});
+	const [selectedInstanceId, setSelectedInstanceId] = useState<number | null>(
+		null
+	);
+	const [timestamp, setTimestamp] = useState<number | null>(() => {
+		const savedTimestamp = localStorage.getItem("timestamp");
+		return savedTimestamp ? JSON.parse(savedTimestamp) : null;
+	});
+
+	useEffect(() => {
+		localStorage.setItem("timestamp", JSON.stringify(timestamp));
+	}, [timestamp]);
 
 	useEffect(() => {
 		localStorage.setItem("downloadTasks", JSON.stringify(downloadTasks));
@@ -97,8 +111,6 @@ export default function UserInstances(props: Props) {
 						const state = response.data.state;
 						const status = response.data.result.status;
 
-						console.log(response.data);
-
 						if (state !== task.state || status !== task.status) {
 							setDict((prev) => ({
 								...prev,
@@ -139,6 +151,7 @@ export default function UserInstances(props: Props) {
 	const StartInstance = (id: number) => {
 		AxiosInstance.post(`instances/${id}/start/`)
 			.then((response) => {
+				setTimestamp(Date.now());
 				setStartTasks((prev) => ({
 					...prev,
 					[id]: {
@@ -157,6 +170,7 @@ export default function UserInstances(props: Props) {
 	const StopInstance = (id: number) => {
 		AxiosInstance.post(`instances/${id}/stop/`)
 			.then((response) => {
+				setTimestamp(null);
 				setStopTasks((prev) => ({
 					...prev,
 					[id]: {
@@ -203,7 +217,7 @@ export default function UserInstances(props: Props) {
 	};
 
 	const handleClick = (
-		type: "start" | "stop" | "download" | "delete",
+		type: "start" | "stop" | "download" | "delete" | "logs",
 		id: number
 	) => {
 		switch (type) {
@@ -219,39 +233,52 @@ export default function UserInstances(props: Props) {
 			case "delete":
 				DeleteInstance(id);
 				break;
+			case "logs":
+				setSelectedInstanceId(id);
+				break;
 		}
 	};
 	return (
-		<Stack spacing={2} alignItems="center" width="100%">
-			{props.userInstances.length > 0 ? (
-				props.userInstances.map((instance) => (
-					<InstanceCard
-						key={instance.id}
-						id={instance.id}
-						title={instance.name}
-						port={instance.port}
-						preset={instance.preset}
-						is_running={instance.is_running}
-						is_ready={instance.is_ready}
-						handleClick={handleClick}
-						downloadTask={
-							downloadTasks[instance.id]
-								? downloadTasks[instance.id]
-								: undefined
-						}
-						startTask={
-							startTasks[instance.id] ? startTasks[instance.id] : undefined
-						}
-						stopTask={
-							stopTasks[instance.id] ? stopTasks[instance.id] : undefined
-						}
-					/>
-				))
-			) : (
-				<Typography variant="body1" color="textSecondary" fontSize={20}>
-					Brak instancji użytkownika
-				</Typography>
+		<>
+			<Stack spacing={2} alignItems="center" width="100%">
+				{props.userInstances.length > 0 ? (
+					props.userInstances.map((instance) => (
+						<InstanceCard
+							key={instance.id}
+							id={instance.id}
+							title={instance.name}
+							log_file={instance.log_file}
+							port={instance.port}
+							preset={instance.preset}
+							is_running={instance.is_running}
+							is_ready={instance.is_ready}
+							handleClick={handleClick}
+							downloadTask={
+								downloadTasks[instance.id]
+									? downloadTasks[instance.id]
+									: undefined
+							}
+							startTask={
+								startTasks[instance.id] ? startTasks[instance.id] : undefined
+							}
+							stopTask={
+								stopTasks[instance.id] ? stopTasks[instance.id] : undefined
+							}
+							timestamp={timestamp}
+						/>
+					))
+				) : (
+					<Typography variant="body1" color="textSecondary" fontSize={20}>
+						Brak instancji użytkownika
+					</Typography>
+				)}
+			</Stack>
+			{selectedInstanceId !== null && (
+				<ServerLogsModal
+					selectedInstanceId={selectedInstanceId}
+					onClose={() => setSelectedInstanceId(null)}
+				/>
 			)}
-		</Stack>
+		</>
 	);
 }

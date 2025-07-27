@@ -7,20 +7,21 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useAlert } from "../../contexts/AlertContext";
 import FAB from "../../UI/forms/FAB";
-import { set } from "react-hook-form";
-import CreateInstanceModal from "./CreateInstanceModal";
+import CreateInstanceModal from "./modals/CreateInstanceModal";
 
 interface Instance {
 	id: number;
 	name: string;
 	user: string;
 	preset: string;
+	log_file: string | null;
 	start_file_path: string;
-	created_at: string;
-	is_admin_instance: boolean;
+	port: number;
+	pid: number;
 	is_ready: boolean;
 	is_running: boolean;
-	port: number;
+	is_admin_instance: boolean;
+	created_at: string;
 }
 
 export default function Instances() {

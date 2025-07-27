@@ -8,16 +8,18 @@ import {
 } from "@mui/material";
 import MyButton from "../../UI/forms/MyButton";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
+import TextSnippetIcon from "@mui/icons-material/TextSnippet";
 
 interface Props {
 	id: number;
 	title: string;
 	port: number;
+	log_file: string | null;
 	preset: string;
 	is_running: boolean;
 	is_ready: boolean;
 	handleClick: (
-		type: "start" | "stop" | "download" | "delete",
+		type: "start" | "stop" | "download" | "delete" | "logs",
 		id: number
 	) => void;
 	downloadTask?: {
@@ -35,9 +37,13 @@ interface Props {
 		state: string;
 		status: string;
 	};
+	timestamp: number | null;
 }
 
 export default function InstanceCard(props: Props) {
+	const endTime = props.timestamp
+		? new Date(props.timestamp + 3600000).getTime()
+		: null;
 	return (
 		<Card sx={{ minWidth: { xs: 300, sm: 400, md: 800 } }}>
 			<CardContent sx={{ padding: "8px 16px" }}>
@@ -80,9 +86,32 @@ export default function InstanceCard(props: Props) {
 					<Typography component={"li"} fontWeight={"bold"}>
 						Port: <Typography component="span">{props.port}</Typography>
 					</Typography>
+					{endTime && props.is_running && (
+						<Typography component={"li"} fontWeight={"bold"}>
+							Godzina wyłączenia:{" "}
+							<Typography component="span">
+								{new Date(endTime).toLocaleTimeString("pl-PL", {
+									hour: "2-digit",
+									minute: "2-digit",
+								})}
+							</Typography>
+						</Typography>
+					)}
 				</Typography>
 			</CardContent>
 			<CardActions sx={{ justifyContent: "right" }}>
+				{props.log_file && (
+					<Button
+						sx={{
+							minWidth: 0,
+							padding: "6px",
+						}}
+						onClick={() => props.handleClick("logs", props.id)}
+					>
+						<TextSnippetIcon sx={{ color: "gray" }} fontSize="medium" />
+					</Button>
+				)}
+
 				{props.is_ready ? (
 					props.is_running ? (
 						props.stopTask && props.stopTask.state === "PROGRESS" ? (

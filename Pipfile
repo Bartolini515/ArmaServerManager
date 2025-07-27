@@ -18,6 +18,8 @@ beautifulsoup4 = "*"
 psutil = "*"
 celery = "*"
 redis = "*"
+django-celery-beat = "*"
+django-redis = "*"
 
 [dev-packages]
 

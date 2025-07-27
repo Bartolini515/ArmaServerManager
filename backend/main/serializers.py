@@ -6,7 +6,6 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 import re
 import base64
-import os
 User = get_user_model()
 
 # ProfilesSerializers
@@ -139,4 +138,5 @@ class InstanceSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Instances
-        fields = ('id', 'name', 'user', 'preset', 'start_file_path', 'created_at', 'is_admin_instance', 'is_ready', 'is_running', 'port')
+        fields = ('id', 'name', 'user', 'preset', 'log_file', 'start_file_path', 'port', 
+                  'pid', 'is_ready', 'is_running', 'is_admin_instance', 'created_at')

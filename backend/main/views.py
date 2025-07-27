@@ -1,3 +1,4 @@
+from django.http import HttpResponse
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
 from .serializers import *
@@ -16,7 +17,9 @@ from .modpreset.start_files import generate_sh_file, check_sh_file_exists, gener
 from .utils.config import config
 from .utils.logger import Logger
 from celery.result import AsyncResult
-from .tasks import download_mods_task, start_server_task, stop_server_task
+from .tasks import *
+from django.core.cache import cache
+from servermanager.celery import app as celery_app
 User = get_user_model()
 
 def message_response(data, message="Operacja się powiodła"):
@@ -247,6 +250,9 @@ class InstancesViewset(viewsets.ModelViewSet):
         if self.queryset.filter(user=user, is_running=True).exists():
             return Response({"message": "Nie można posiadać uruchomionej więcej niż jednej instancji"}, status=400)
         
+        if self.queryset.filter(is_admin_instance=False, is_running=True).count() >= 5 and not user.is_staff:
+            return Response({"message": "Przekroczono generalny limit 5 uruchomionych instancji. Spróbuj ponownie później."}, status=403)
+
         if not instance.log_file:
             log_filename = f"log_file.txt"
             log_content = f"Log file for instance '{instance.name}' created at {timezone.now()}.\n"
@@ -272,6 +278,15 @@ class InstancesViewset(viewsets.ModelViewSet):
             start_logger.log(f"Nie udało się rozpocząć zadania uruchamiania: {str(e)}")
             start_logger.write_log_to_file()
             return Response({"message": f"Nie udało się rozpocząć zadania uruchamiania: {str(e)}"}, status=500)
+        
+        cache_key = f"terminate_task_{instance.id}"
+        old_terminate_task = cache.get(cache_key)
+        if old_terminate_task:
+            celery_app.control.revoke(old_terminate_task, terminate=True)
+
+        async_result = instance_timeout_task.apply_async(args=[instance.id], countdown=3600)
+        cache.set(cache_key, async_result.id, timeout=3660) # longer than task timeout
+        
         start_logger.write_log_to_file()
         return Response({"task_id": task.id}, status=202)
 
@@ -326,3 +341,28 @@ class InstancesViewset(viewsets.ModelViewSet):
             "result": res
         }
         return Response(result, status=200)
+
+    @action(detail=True, methods=['get'], url_path='logs')
+    def logs(self, request, pk=None):
+        try:
+            instance = Instances.objects.get(pk=pk)
+        except Instances.DoesNotExist:
+            return Response({"message": "Instancja nie została znaleziona"}, status=404)
+
+        logs = instance.get_logs()
+        return Response(logs, status=200)
+
+    @action(detail=True, methods=['get'], url_path='logs/download')
+    def download_logs(self, request, pk=None):
+        try:
+            instance = Instances.objects.get(pk=pk)
+        except Instances.DoesNotExist:
+            return Response({"message": "Instancja nie została znaleziona"}, status=404)
+
+        logs = instance.get_logs()
+        if not logs:
+            return Response({"message": "Brak logów do pobrania"}, status=404)
+
+        response = HttpResponse(logs, content_type="text/plain")
+        response['Content-Disposition'] = f'attachment; filename="logs_{pk}.txt"'
+        return response
