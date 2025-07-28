@@ -13,6 +13,7 @@ import Account from "./components/account/Account";
 import Instances from "./components/instances/Instances";
 import ModeratorPanelConfiguration from "./components/moderatorPanel/ModeratorPanelConfiguration";
 import ModeratorPanelDataManagement from "./components/moderatorPanel/ModeratorPanelDataManagement";
+import Missions from "./components/missions/Missions";
 
 export default function App() {
 	const location = useLocation();
@@ -42,6 +43,7 @@ export default function App() {
 								<Route path="/dashboard" element={<Dashboard />} />
 								<Route path="/account" element={<Account />} />
 								<Route path="/instances" element={<Instances />} />
+								<Route path="/missions" element={<Missions />} />
 								<Route
 									path="/moderator_panel_data_management"
 									element={<ModeratorPanelDataManagement />}

@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { useAlert } from "../../contexts/AlertContext";
-import { useInterval } from "../../hooks/use-interval";
 import AxiosInstance from "../AxiosInstance";
 import InstanceCard from "./InstanceCard";
 import { Stack, Typography } from "@mui/material";
@@ -30,31 +29,40 @@ interface TaskTemplate {
 interface Props {
 	userInstances: Instance[];
 	setRefresh: (refresh: boolean) => void;
+	startTasks: {
+		[instanceId: number]: TaskTemplate;
+	};
+	setStartTasks: (
+		tasks:
+			| { [instanceId: number]: TaskTemplate }
+			| ((prev: { [instanceId: number]: TaskTemplate }) => {
+					[instanceId: number]: TaskTemplate;
+			  })
+	) => void;
+	stopTasks: {
+		[instanceId: number]: TaskTemplate;
+	};
+	setStopTasks: (
+		tasks:
+			| { [instanceId: number]: TaskTemplate }
+			| ((prev: { [instanceId: number]: TaskTemplate }) => {
+					[instanceId: number]: TaskTemplate;
+			  })
+	) => void;
+	downloadTasks: { [instanceId: number]: TaskTemplate };
+	setDownloadTasks: (
+		tasks:
+			| { [instanceId: number]: TaskTemplate }
+			| ((prev: { [instanceId: number]: TaskTemplate }) => {
+					[instanceId: number]: TaskTemplate;
+			  })
+	) => void;
+	selectedInstanceId: number | null;
+	setSelectedInstanceId: (id: number | null) => void;
 }
 
 export default function UserInstances(props: Props) {
 	const { setAlert } = useAlert();
-	const [downloadTasks, setDownloadTasks] = useState<{
-		[instanceId: number]: TaskTemplate;
-	}>(() => {
-		const savedTasks = localStorage.getItem("downloadTasks");
-		return savedTasks ? JSON.parse(savedTasks) : {};
-	});
-	const [startTasks, setStartTasks] = useState<{
-		[instanceId: number]: TaskTemplate;
-	}>(() => {
-		const savedTasks = localStorage.getItem("startTasks");
-		return savedTasks ? JSON.parse(savedTasks) : {};
-	});
-	const [stopTasks, setStopTasks] = useState<{
-		[instanceId: number]: TaskTemplate;
-	}>(() => {
-		const savedTasks = localStorage.getItem("stopTasks");
-		return savedTasks ? JSON.parse(savedTasks) : {};
-	});
-	const [selectedInstanceId, setSelectedInstanceId] = useState<number | null>(
-		null
-	);
 	const [timestamp, setTimestamp] = useState<number | null>(() => {
 		const savedTimestamp = localStorage.getItem("timestamp");
 		return savedTimestamp ? JSON.parse(savedTimestamp) : null;
@@ -64,95 +72,11 @@ export default function UserInstances(props: Props) {
 		localStorage.setItem("timestamp", JSON.stringify(timestamp));
 	}, [timestamp]);
 
-	useEffect(() => {
-		localStorage.setItem("downloadTasks", JSON.stringify(downloadTasks));
-		localStorage.setItem("startTasks", JSON.stringify(startTasks));
-		localStorage.setItem("stopTasks", JSON.stringify(stopTasks));
-	}, [downloadTasks, startTasks, stopTasks]);
-
-	const tasksMap = {
-		download: {
-			dict: downloadTasks,
-			setDict: setDownloadTasks,
-			alerts_messages: {
-				success: "Pobieranie zakończone pomyślnie!",
-				failure: "Pobieranie nie powiodło się: ",
-			},
-		},
-		start: {
-			dict: startTasks,
-			setDict: setStartTasks,
-			alerts_messages: {
-				success: "Instancja została uruchomiona pomyślnie!",
-				failure: "Uruchomienie instancji nie powiodło się: ",
-			},
-		},
-		stop: {
-			dict: stopTasks,
-			setDict: setStopTasks,
-			alerts_messages: {
-				success: "Instancja została zatrzymana pomyślnie!",
-				failure: "Zatrzymanie instancji nie powiodło się: ",
-			},
-		},
-	};
-
-	const GetTasksStatus = () => {
-		for (const key in tasksMap) {
-			const { dict, setDict, alerts_messages } =
-				tasksMap[key as keyof typeof tasksMap];
-			Object.entries(dict).forEach(([instanceId, task]) => {
-				if (task.state === "SUCCESS" || task.state === "FAILURE") {
-					return; // Skip completed tasks
-				}
-
-				AxiosInstance.get(`instances/task_status/${task.taskId}/`)
-					.then((response) => {
-						const state = response.data.state;
-						const status = response.data.result.status;
-
-						if (state !== task.state || status !== task.status) {
-							setDict((prev) => ({
-								...prev,
-								[Number(instanceId)]: {
-									...prev[Number(instanceId)],
-									state: state,
-									status: status,
-								},
-							}));
-						}
-
-						if (state === "SUCCESS") {
-							props.setRefresh(true);
-							setAlert(alerts_messages.success, "success");
-						} else if (state === "FAILURE") {
-							props.setRefresh(true);
-							setAlert(`${alerts_messages.failure} ${status}`, "error");
-						}
-					})
-					.catch((error: any) => {
-						console.log(error);
-						setAlert(error.response.data.message || error.message, "error");
-						setDict((prev) => ({
-							...prev,
-							[Number(instanceId)]: {
-								...prev[Number(instanceId)],
-								state: "FAILURE",
-								status: `Wystąpił błąd: ${error.message}`,
-							},
-						}));
-					});
-			});
-		}
-	};
-
-	useInterval(GetTasksStatus, 5000);
-
 	const StartInstance = (id: number) => {
 		AxiosInstance.post(`instances/${id}/start/`)
 			.then((response) => {
 				setTimestamp(Date.now());
-				setStartTasks((prev) => ({
+				props.setStartTasks((prev) => ({
 					...prev,
 					[id]: {
 						taskId: response.data.task_id,
@@ -171,7 +95,7 @@ export default function UserInstances(props: Props) {
 		AxiosInstance.post(`instances/${id}/stop/`)
 			.then((response) => {
 				setTimestamp(null);
-				setStopTasks((prev) => ({
+				props.setStopTasks((prev) => ({
 					...prev,
 					[id]: {
 						taskId: response.data.task_id,
@@ -189,7 +113,7 @@ export default function UserInstances(props: Props) {
 	const StartDownload = (id: number) => {
 		AxiosInstance.post(`instances/${id}/download_mods/`)
 			.then((response) => {
-				setDownloadTasks((prev) => ({
+				props.setDownloadTasks((prev) => ({
 					...prev,
 					[id]: {
 						taskId: response.data.task_id,
@@ -217,7 +141,7 @@ export default function UserInstances(props: Props) {
 	};
 
 	const handleClick = (
-		type: "start" | "stop" | "download" | "delete" | "logs",
+		type: "start" | "stop" | "download" | "delete" | "logs" | "preset",
 		id: number
 	) => {
 		switch (type) {
@@ -234,7 +158,11 @@ export default function UserInstances(props: Props) {
 				DeleteInstance(id);
 				break;
 			case "logs":
-				setSelectedInstanceId(id);
+				props.setSelectedInstanceId(id);
+				break;
+			case "preset":
+				// Preset logic is only for admin instances
+				setAlert("Ta funkcja jest dostępna tylko dla instancji administratora.", "error");
 				break;
 		}
 	};
@@ -252,17 +180,22 @@ export default function UserInstances(props: Props) {
 							preset={instance.preset}
 							is_running={instance.is_running}
 							is_ready={instance.is_ready}
+							is_admin_instance={instance.is_admin_instance}
 							handleClick={handleClick}
 							downloadTask={
-								downloadTasks[instance.id]
-									? downloadTasks[instance.id]
+								props.downloadTasks[instance.id]
+									? props.downloadTasks[instance.id]
 									: undefined
 							}
 							startTask={
-								startTasks[instance.id] ? startTasks[instance.id] : undefined
+								props.startTasks[instance.id]
+									? props.startTasks[instance.id]
+									: undefined
 							}
 							stopTask={
-								stopTasks[instance.id] ? stopTasks[instance.id] : undefined
+								props.stopTasks[instance.id]
+									? props.stopTasks[instance.id]
+									: undefined
 							}
 							timestamp={timestamp}
 						/>
@@ -273,10 +206,10 @@ export default function UserInstances(props: Props) {
 					</Typography>
 				)}
 			</Stack>
-			{selectedInstanceId !== null && (
+			{props.selectedInstanceId !== null && (
 				<ServerLogsModal
-					selectedInstanceId={selectedInstanceId}
-					onClose={() => setSelectedInstanceId(null)}
+					selectedInstanceId={props.selectedInstanceId}
+					onClose={() => props.setSelectedInstanceId(null)}
 				/>
 			)}
 		</>

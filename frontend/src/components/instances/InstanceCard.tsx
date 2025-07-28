@@ -9,6 +9,7 @@ import {
 import MyButton from "../../UI/forms/MyButton";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import TextSnippetIcon from "@mui/icons-material/TextSnippet";
+import FileUploadIcon from "@mui/icons-material/FileUpload";
 
 interface Props {
 	id: number;
@@ -18,8 +19,9 @@ interface Props {
 	preset: string;
 	is_running: boolean;
 	is_ready: boolean;
+	is_admin_instance: boolean;
 	handleClick: (
-		type: "start" | "stop" | "download" | "delete" | "logs",
+		type: "start" | "stop" | "download" | "delete" | "logs" | "preset",
 		id: number
 	) => void;
 	downloadTask?: {
@@ -37,7 +39,7 @@ interface Props {
 		state: string;
 		status: string;
 	};
-	timestamp: number | null;
+	timestamp?: number | null;
 }
 
 export default function InstanceCard(props: Props) {
@@ -54,15 +56,17 @@ export default function InstanceCard(props: Props) {
 						marginBottom: "16px",
 					}}
 				>
-					<Button
-						sx={{
-							minWidth: 0,
-							padding: "6px",
-						}}
-						onClick={() => props.handleClick("delete", props.id)}
-					>
-						<DeleteForeverIcon sx={{ color: "red" }} fontSize="medium" />
-					</Button>
+					{!props.is_admin_instance && (
+						<Button
+							sx={{
+								minWidth: 0,
+								padding: "6px",
+							}}
+							onClick={() => props.handleClick("delete", props.id)}
+						>
+							<DeleteForeverIcon sx={{ color: "red" }} fontSize="medium" />
+						</Button>
+					)}
 					<Typography
 						variant="h5"
 						component="div"
@@ -100,6 +104,17 @@ export default function InstanceCard(props: Props) {
 				</Typography>
 			</CardContent>
 			<CardActions sx={{ justifyContent: "right" }}>
+				{props.is_admin_instance && !props.is_running && (
+					<Button
+						sx={{
+							minWidth: 0,
+							padding: "6px",
+						}}
+						onClick={() => props.handleClick("preset", props.id)}
+					>
+						<FileUploadIcon sx={{ color: "gray" }} fontSize="medium" />
+					</Button>
+				)}
 				{props.log_file && (
 					<Button
 						sx={{

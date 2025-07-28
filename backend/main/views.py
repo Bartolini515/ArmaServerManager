@@ -27,6 +27,12 @@ def message_response(data, message="Operacja się powiodła"):
         "result": data,
         "message": message
     })
+    
+def get_super_user():
+    try:
+        return Profile.objects.get(is_superuser=True)
+    except Profile.DoesNotExist:
+        return None
 
 class LoginViewset(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
@@ -208,7 +214,7 @@ class InstancesViewset(viewsets.ModelViewSet):
             create_logger = Logger(name="create", user=user.username)
             mod_paths = preset_parser(instance.preset.path, log_callback=create_logger.log)
             if not user.server_config:
-                server_config_file_path = generate_server_config(user.username, user.password, config.get("paths.arma3"), log_callback=create_logger.log)
+                server_config_file_path = generate_server_config(user.username, "test", config.get("paths.arma3"), log_callback=create_logger.log)
                 user.server_config = server_config_file_path
                 user.save()
             start_file_path = generate_sh_file(instance.name, instance.port.port_number, user.username, mod_paths, config.get("paths.mods_directory"), config.get("paths.arma3"), log_callback=create_logger.log)
@@ -237,10 +243,13 @@ class InstancesViewset(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="start")
     def start(self, request, pk=None):
         user = self.request.user
-        start_logger = Logger(name="start", user=user.username)
         
         try:
             instance = Instances.objects.get(pk=pk)
+            if instance.is_admin_instance and user.is_staff:
+                user = get_super_user()
+                if not user:
+                    return Response({"message": "Nie znaleziono administratora."}, status=404)
         except Instances.DoesNotExist:
             return Response({"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"}, status=404)
 
@@ -252,6 +261,8 @@ class InstancesViewset(viewsets.ModelViewSet):
         
         if self.queryset.filter(is_admin_instance=False, is_running=True).count() >= 5 and not user.is_staff:
             return Response({"message": "Przekroczono generalny limit 5 uruchomionych instancji. Spróbuj ponownie później."}, status=403)
+        
+        start_logger = Logger(name="start", user=user.username)
 
         if not instance.log_file:
             log_filename = f"log_file.txt"
@@ -279,13 +290,13 @@ class InstancesViewset(viewsets.ModelViewSet):
             start_logger.write_log_to_file()
             return Response({"message": f"Nie udało się rozpocząć zadania uruchamiania: {str(e)}"}, status=500)
         
-        cache_key = f"terminate_task_{instance.id}"
-        old_terminate_task = cache.get(cache_key)
-        if old_terminate_task:
-            celery_app.control.revoke(old_terminate_task, terminate=True)
-
-        async_result = instance_timeout_task.apply_async(args=[instance.id], countdown=3600)
-        cache.set(cache_key, async_result.id, timeout=3660) # longer than task timeout
+        if not instance.is_admin_instance:
+            cache_key = f"terminate_task_{instance.id}"
+            old_terminate_task = cache.get(cache_key)
+            if old_terminate_task:
+                celery_app.control.revoke(old_terminate_task, terminate=True)
+            async_result = instance_timeout_task.apply_async(args=[instance.id], countdown=3600)
+            cache.set(cache_key, async_result.id, timeout=3660) # longer than task timeout
         
         start_logger.write_log_to_file()
         return Response({"task_id": task.id}, status=202)
@@ -308,10 +319,56 @@ class InstancesViewset(viewsets.ModelViewSet):
             return Response({"message": f"Nie udało się rozpocząć zadania zatrzymania: {str(e)}"}, status=500)
         return Response({"task_id": task.id}, status=202)
 
+    @action(detail=True, methods=["post"], url_path="admin_instance/change_preset", permission_classes=[permissions.IsAdminUser])
+    def change_preset(self, request, pk=None):
+        try:
+            user = get_super_user()
+        except Profile.DoesNotExist:
+            return Response({"message": "Nie znaleziono administratora."}, status=404)
+        
+        try:
+            instance = Instances.objects.get(pk=pk)
+        except Instances.DoesNotExist:
+            return Response({"message": "Instancja nie została znaleziona."}, status=404)
+        
+        if not instance.is_admin_instance:
+            return Response({"message": "To nie jest instancja administracyjna."}, status=400)
+        
+        if instance.is_running:
+            return Response({"message": "Nie można zmienić presetu działającej instancji."}, status=400)
+        
+
+        serializer = self.serializer_class(instance, data=request.data, partial=True)
+        if serializer.is_valid():
+            if instance.preset and os.path.exists(instance.preset.path):
+                os.remove(instance.preset.path)
+            instance.preset = serializer.validated_data["preset"]
+            instance.save()
+        else:
+            return Response(serializer.errors, status=400)
+        
+        change_preset_logger = Logger(name="change_preset", user=user.username)
+        mod_paths = preset_parser(instance.preset.path, log_callback=change_preset_logger.log)
+        
+        if instance.start_file_path and os.path.exists(instance.start_file_path):
+            os.remove(instance.start_file_path)
+        start_file_path = generate_sh_file(instance.name, instance.port.port_number, user.username, mod_paths, config.get("paths.mods_directory"), config.get("paths.arma3"), log_callback=change_preset_logger.log)
+        instance.start_file_path = start_file_path
+        instance.is_ready = False
+        instance.save()
+        
+        change_preset_logger.write_log_to_file()
+        return message_response(self.serializer_class(instance).data, "Preset instancji głównej został zmieniony")
+
     @action(detail=True, methods=['post'], url_path='download_mods')
     def download_mods(self, request, pk=None):
         instance = Instances.objects.get(pk=pk)
-        user = self.request.user
+        if instance.is_admin_instance:
+            user = get_super_user()
+            if not user:
+                return Response({"message": "Nie znaleziono administratora."}, status=404)
+        else:
+            user = self.request.user
         
         try:
             task = download_mods_task.delay(
@@ -366,3 +423,17 @@ class InstancesViewset(viewsets.ModelViewSet):
         response = HttpResponse(logs, content_type="text/plain")
         response['Content-Disposition'] = f'attachment; filename="logs_{pk}.txt"'
         return response
+    
+class MissionsViewset(viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = Missions.objects.all()
+    serializer_class = MissionSerializer
+    
+    def create(self, request):
+        serializer = self.serializer_class(data=request.data)
+        if serializer.is_valid():
+            
+            mission = serializer.save()
+            return message_response(self.serializer_class(mission).data, "Misja została wgrana")
+        else:
+            return Response(serializer.errors, status=400)

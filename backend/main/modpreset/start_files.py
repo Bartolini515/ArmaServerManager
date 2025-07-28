@@ -18,7 +18,7 @@ def generate_server_config(username: str, password: str, arma_path: str, log_cal
         password = "{password}";
         hostname = "FOG - {username} Server";
         maxPlayers = 128;
-        motd[] = {"Witaj na serwerze FOG użytkownika {username}!"};
+        motd[] = {{"Witaj na serwerze FOG użytkownika {username}!"}};
         verifySignatures = 0;
         logFile = "server_{username}_console.log";
         BattlEye = 0;
@@ -33,7 +33,7 @@ def generate_server_config(username: str, password: str, arma_path: str, log_cal
         log_callback(f"Generated server config for {username} at {config_path}")
     return config_path
 
-def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_directory: str, arma_directory: str, log_callback: callable = None) -> str:
+def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_directory: str, arma_directory: str, log_callback: callable = None, is_admin_instance: bool = False) -> str:
     """Generates a shell script to start the Arma 3 server.
     Args:
         name (str): The name of the server.
@@ -43,6 +43,7 @@ def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_
         mods_directory (str): The directory where the mod files are located.
         arma_directory (str): The directory where the Arma 3 server executable is located.
         log_callback (callable, optional): The logging callback function. Defaults to None.
+        is_admin_instance (bool, optional): Whether the instance is an admin instance. Defaults to False.
 
     Returns:
         str: The path to the generated shell script.
@@ -51,7 +52,7 @@ def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_
 
     with open(script_name, 'w') as script_file:
         script_file.write("#!/bin/bash\n")
-        script_file.write(f'./arma3server_x64 -port={port} -config="server_{username}.cfg"')
+        script_file.write(f'./arma3server_x64 -port={port} -config="server_{username if not is_admin_instance else name}.cfg"')
 
         if mod_paths:
             mod_paths = [os.path.join(mods_directory, os.path.basename(path)) for path in

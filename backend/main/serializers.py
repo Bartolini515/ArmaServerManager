@@ -140,3 +140,37 @@ class InstanceSerializer(serializers.ModelSerializer):
         model = Instances
         fields = ('id', 'name', 'user', 'preset', 'log_file', 'start_file_path', 'port', 
                   'pid', 'is_ready', 'is_running', 'is_admin_instance', 'created_at')
+        
+# MissionsSerializers
+class MissionSerializer(serializers.ModelSerializer):
+    def validate_mission_file(self, value):
+        filename = value.name if hasattr(value, 'name') else str(value)
+        if len(filename) < 3:
+            raise serializers.ValidationError("Nazwa pliku misji musi mieć co najmniej 3 znaki.")
+        if not re.match(r'^[A-Za-z0-9_.-]+$', filename):
+            raise serializers.ValidationError(
+                "Nazwa pliku misji może zawierać tylko litery ASCII, cyfry, podkreślenia, kropki i myślniki."
+            )
+        if not filename.endswith('.pbo'):
+            raise serializers.ValidationError("Plik misji musi mieć rozszerzenie .pbo")
+        return value
+    
+    def create(self, validated_data):
+        """
+        Creates a new mission, replacing any existing mission with the same filename.
+        """
+        mission_file = validated_data['mission_file']
+        
+        mission_path = os.path.join(
+            self.Meta.model.mission_file.field.upload_to, 
+            os.path.basename(mission_file.name)
+        )
+        
+        if existing_mission := self.Meta.model.objects.filter(mission_file=mission_path).first():
+            existing_mission.delete() 
+            
+        return self.Meta.model.objects.create(**validated_data)
+    
+    class Meta:
+        model = Missions
+        fields = ('id', 'mission_file')

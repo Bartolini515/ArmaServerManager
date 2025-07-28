@@ -12,6 +12,7 @@ import StorageIcon from "@mui/icons-material/Storage";
 import AdminPanelSettingsIcon from "@mui/icons-material/AdminPanelSettings";
 import DatasetOutlinedIcon from "@mui/icons-material/DatasetOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import FolderIcon from "@mui/icons-material/Folder";
 import { useState } from "react";
 import { useAuth } from "../../contexts/AuthContext";
 
@@ -57,6 +58,17 @@ export default function Menu() {
 					<StorageIcon />
 				</ListItemIcon>
 				<ListItemText primary="Instancje serwerowe" />
+			</ListItemButton>
+
+			<ListItemButton
+				component={Link}
+				to="/missions"
+				selected={path === "/missions"}
+			>
+				<ListItemIcon>
+					<FolderIcon />
+				</ListItemIcon>
+				<ListItemText primary="Misje" />
 			</ListItemButton>
 
 			<ListItemButton
