@@ -87,7 +87,7 @@ def steamcmd_download(mod: str, appid: int, login: str, password: str, steamcmd_
     Returns:
         int: The return code from the SteamCMD process.
     """
-    args = ['bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}', f'+force_install_dir {ghost_folder_path}']
+    args = ['/usr/bin/bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}', f'+force_install_dir {ghost_folder_path}']
 
     if steamguard:
         args.append(f'+set_steam_guard_code {steamguard}')
