@@ -100,7 +100,6 @@ def steamcmd_download(mod: str, appid: int, login: str, password: str, steamcmd_
     args.append("+quit")
 
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    print(process)
     
     stream_process_output(process, log_callback if log_callback else None)
     
