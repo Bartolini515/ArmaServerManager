@@ -6,6 +6,8 @@ from .modpreset.modpathing import check_installed
 from .serverhandling.start_server import start_server
 from .utils.logger import Logger
 import psutil
+from django.core.cache import cache
+from servermanager.celery import app as celery_app
 
 @shared_task(bind=True)
 def download_mods_task(self, instance_id: int, name: str, user: str, file_path: str, mods_directory: str) -> dict:
@@ -96,26 +98,60 @@ def stop_server_task(self, instance_id: int) -> dict:
     try:
         instance = Instances.objects.get(id=instance_id)
         pid = instance.pid
+        
+        self.update_state(state='PROGRESS', meta={'status': 'Zatrzymywanie serwera...'})
+        
+        pids_to_kill = set()
+        if pid and psutil.pid_exists(pid):
+            pids_to_kill.add(pid)
+            
+        try:
+            for conn in psutil.net_connections(kind='udp'):
+                if conn.laddr.port == instance.port and conn.pid:
+                    pids_to_kill.add(conn.pid)
+        except Exception:
+                pass
 
-        if not pid or not psutil.pid_exists(pid):
+        if not pids_to_kill:
             instance.pid = None
             instance.is_running = False
             instance.save()
             raise Exception(f'Nie udało się odnaleźć procesu serwera.')
 
-        self.update_state(state='PROGRESS', meta={'status': 'Zatrzymywanie serwera...'})
-        process = psutil.Process(pid)
-        process.terminate() # Sends SIGTERM, a graceful shutdown signal
-        
-        # Wait a bit for graceful shutdown
-        try:
-            process.wait(timeout=30)
-        except psutil.TimeoutExpired:
-            # If it doesn't terminate, force kill it
-            process.kill() # Sends SIGKILL
+        for process_pid in pids_to_kill:
+            try:
+                process = psutil.Process(process_pid)
+                # Terminate children first
+                for child in process.children(recursive=True):
+                    try:
+                        child.terminate()
+                        child.wait(timeout=30)
+                    except psutil.TimeoutExpired:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        continue
+                
+                # Terminate the main process
+                try:
+                    process.terminate()
+                    process.wait(timeout=30)
+                except psutil.TimeoutExpired:
+                    process.kill()
+                except psutil.NoSuchProcess:
+                    continue
+
+            except psutil.NoSuchProcess:
+                # Process might have already been terminated
+                continue
 
         instance.pid = None
+        instance.is_running = False
         instance.save()
+        
+        cache_key = f"terminate_task_{instance.id}"
+        old_terminate_task = cache.get(cache_key)
+        if old_terminate_task:
+                celery_app.control.revoke(old_terminate_task, terminate=True)
 
         self.update_state(state='SUCCESS', meta={'status': 'Zatrzymywanie serwera zakończone pomyślnie!'})
         return {'status': 'Serwer został zatrzymany pomyślnie.'}
