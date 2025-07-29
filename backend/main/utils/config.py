@@ -18,7 +18,7 @@ class Config:
             
         self.config = {}
         if not os.path.exists(self.file_path):
-            self._create_default_config()
+            self._create_blank_config()
         else:
             self._load()
 
