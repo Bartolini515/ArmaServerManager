@@ -12,7 +12,7 @@ const AxiosInstance = axios.create({
 
 AxiosInstance.interceptors.request.use((config) => {
 	const token = localStorage.getItem("Token");
-	if (config.data instanceof FormData) {
+	if (config.headers["Content-Type"] === "multipart/form-data") {
 		config.timeout = 0;
 	}
 	if (token) {
