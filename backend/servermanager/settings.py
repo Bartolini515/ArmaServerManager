@@ -192,6 +192,10 @@ CSRF_TRUSTED_ORIGINS = [
     'https://servermanager.fogarma3.pl:8121',
 ]
 
+# Max upload size
+DATA_UPLOAD_MAX_MEMORY_SIZE = 268435456  # 256MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 268435456  # 256MB
+
 # User model and auth
 AUTH_USER_MODEL = "main.Profile"
 

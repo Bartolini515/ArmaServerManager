@@ -87,7 +87,7 @@ def steamcmd_download(mod: str, appid: int, login: str, password: str, steamcmd_
     Returns:
         int: The return code from the SteamCMD process.
     """
-    args = ['/usr/bin/bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}', f'+force_install_dir {ghost_folder_path}']
+    args = ['bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}', f'+force_install_dir {ghost_folder_path}']
 
     if steamguard:
         args.append(f'+set_steam_guard_code {steamguard}')
@@ -98,8 +98,6 @@ def steamcmd_download(mod: str, appid: int, login: str, password: str, steamcmd_
     else:
         args.append(f'+workshop_download_item {appid} {int(mod)}')
     args.append("+quit")
-    
-    print(args)
 
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     print(process)
