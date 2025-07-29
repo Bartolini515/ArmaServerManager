@@ -12,6 +12,9 @@ const AxiosInstance = axios.create({
 
 AxiosInstance.interceptors.request.use((config) => {
 	const token = localStorage.getItem("Token");
+	if (config.data instanceof FormData) {
+		config.timeout = 0;
+	}
 	if (token) {
 		config.headers.Authorization = `Token ${token}`;
 	} else {

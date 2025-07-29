@@ -3,11 +3,12 @@ import Box from "@mui/material/Box";
 import Modal from "@mui/material/Modal";
 import Fade from "@mui/material/Fade";
 import AxiosInstance from "../AxiosInstance";
-import { Button, Typography } from "@mui/material";
+import { Button, CircularProgress, Typography } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import { useForm } from "react-hook-form";
 import { useAlert } from "../../contexts/AlertContext";
 import MyDropzone from "../../UI/forms/MyDropzone";
+import { useState } from "react";
 
 const style = {
 	position: "absolute",
@@ -35,6 +36,7 @@ interface FormData {
 }
 
 export default function CreateMissionModal(props: Props) {
+	const [loading, setLoading] = useState(false);
 	const { handleSubmit, control, setError, clearErrors, setValue } =
 		useForm<FormData>({
 			defaultValues: {
@@ -45,6 +47,8 @@ export default function CreateMissionModal(props: Props) {
 	const { setAlert } = useAlert();
 
 	const submission = (data: FormData) => {
+		setLoading(true);
+		setAlert("Wgrywanie misji, proszę czekać...", "info");
 		AxiosInstance.post(`/missions/`, data, {
 			headers: {
 				"Content-Type": "multipart/form-data",
@@ -71,6 +75,9 @@ export default function CreateMissionModal(props: Props) {
 					console.log(error);
 					setAlert(error.response.data.message || error.message, "error");
 				}
+			})
+			.finally(() => {
+				setLoading(false);
 			});
 	};
 
@@ -80,7 +87,7 @@ export default function CreateMissionModal(props: Props) {
 				aria-labelledby="transition-modal-title"
 				aria-describedby="transition-modal-description"
 				open={props.open}
-				onClose={props.onClose}
+				onClose={loading ? () => {} : props.onClose}
 				closeAfterTransition
 				slots={{ backdrop: Backdrop }}
 				slotProps={{
@@ -121,30 +128,43 @@ export default function CreateMissionModal(props: Props) {
 							<CloseIcon sx={{ color: "red" }} fontSize="medium" />
 						</Button>
 						<form>
-							<MyDropzone
-								label={"Prześlij misję"}
-								name={"mission_file"}
-								control={control}
-								multiple={false}
-								maxFiles={1}
-								onSubmit={(files) => {
-									clearErrors();
-									if (files && files.length > 0) {
-										setValue("mission_file", files[0]);
-									}
-									handleSubmit((data) => {
-										submission(data);
-									})();
-								}}
-								style={{
-									width: "100%",
-									minHeight: "200px",
-									textAlign: "center",
-									display: "flex",
-									justifyContent: "center",
-									alignItems: "center",
-								}}
-							></MyDropzone>
+							{loading ? (
+								<Box
+									sx={{
+										display: "flex",
+										justifyContent: "center",
+										alignItems: "center",
+										minHeight: "200px",
+									}}
+								>
+									<CircularProgress />
+								</Box>
+							) : (
+								<MyDropzone
+									label={"Prześlij misję"}
+									name={"mission_file"}
+									control={control}
+									multiple={false}
+									maxFiles={1}
+									onSubmit={(files) => {
+										clearErrors();
+										if (files && files.length > 0) {
+											setValue("mission_file", files[0]);
+										}
+										handleSubmit((data) => {
+											submission(data);
+										})();
+									}}
+									style={{
+										width: "100%",
+										minHeight: "200px",
+										textAlign: "center",
+										display: "flex",
+										justifyContent: "center",
+										alignItems: "center",
+									}}
+								></MyDropzone>
+							)}
 						</form>
 					</Box>
 				</Fade>
