@@ -10,9 +10,9 @@ def reader_thread(pipe, log_callback: callable = None) -> None:
             
             processed_line = ""
             if isinstance(line, bytes):
-                processed_line = line.decode('utf-8', errors='ignore').strip()
+                processed_line = line.decode('utf-8', errors='ignore').strip() + '\n'
             else: # It's a string
-                processed_line = line.strip()
+                processed_line = line.strip() + '\n'
 
             if log_callback:
                 log_callback(processed_line)
