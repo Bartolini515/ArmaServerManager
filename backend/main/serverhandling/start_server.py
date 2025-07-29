@@ -16,11 +16,7 @@ def start_server(arma3_dir: str, start_file_path: str, log_file_path: str) -> su
     Returns:
         subprocess.Popen: The running process object
     """
-    # args = [start_file_path] # TODO: Uncomment for final
-    
-    # Mimic some process # TODO: Delete for final
-    mock_server_path = os.path.join(os.path.dirname(arma3_dir), "mock_server.bat")
-    args = mock_server_path # Doesn't work, but don't care
+    args = [start_file_path]
 
     process = subprocess.Popen(
         args, 
@@ -30,7 +26,6 @@ def start_server(arma3_dir: str, start_file_path: str, log_file_path: str) -> su
         text=True,
         bufsize=1,
         universal_newlines=True,
-        shell=True  # TODO: Remove, only for testing
     )
     
     def active_log_callback(line: str) -> None:

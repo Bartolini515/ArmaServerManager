@@ -37,7 +37,6 @@ export default function Menu() {
 			}}
 			component="nav"
 		>
-			{/* TODO: Change every path to actual on this project */}
 			<ListItemButton
 				component={Link}
 				to="/dashboard"

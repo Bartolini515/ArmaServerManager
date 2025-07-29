@@ -1,6 +1,5 @@
 import os
 
-# TODO: Refractor and integrate
 def lowercase_addons_directory(wid: str, source_dir: str, log_callback: callable = None) -> None:
     """Lowercases the names of all files and directories in the addons directory of a mod.
 

@@ -26,7 +26,7 @@ def generate_server_config(username: str, password: str, arma_path: str, log_cal
         forcedDifficulty = "Custom";
         disableVoN = 1;
     """
-    config_path = f"{arma_path}\\server_{username}.cfg" # TODO: Change the path separators to linux style
+    config_path = f"{arma_path}/server_{username}.cfg"
     with open(config_path, 'w') as config_file:
         config_file.write(config_content)
     if log_callback:
@@ -48,7 +48,7 @@ def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_
     Returns:
         str: The path to the generated shell script.
     """
-    script_name = f"{arma_directory}\\start{name}.sh" # TODO: Change the path separators to linux style
+    script_name = f"{arma_directory}/start{name}.sh"
 
     with open(script_name, 'w') as script_file:
         script_file.write("#!/bin/bash\n")
