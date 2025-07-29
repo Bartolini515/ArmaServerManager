@@ -70,6 +70,7 @@ class Config:
         Returns:
             _type_: _description_
         """
+        
         keys = key_path.split('.')
         value = self.config
         try:
@@ -88,6 +89,7 @@ class Config:
         self._deep_update(self.config, new_config)
         with open(self.file_path, 'w') as file:
             json.dump(self.config, file, indent=2, ensure_ascii=False)
+        self._load()
             
 # Create a single instance of Config to be used throughout the application
 config = Config('../../data/config.json')
