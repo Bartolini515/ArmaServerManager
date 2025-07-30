@@ -8,6 +8,9 @@ const AxiosInstance = axios.create({
 		"Content-Type": "application/json",
 		Accept: "application/json",
 	},
+	withCredentials: true,
+	xsrfCookieName: "csrftoken",
+	xsrfHeaderName: "X-CSRFToken",
 });
 
 AxiosInstance.interceptors.request.use((config) => {
