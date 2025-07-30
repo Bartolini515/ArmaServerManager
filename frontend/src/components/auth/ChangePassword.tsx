@@ -55,7 +55,12 @@ export default function ChangePasswordLogin() {
 					});
 				} else {
 					console.log(error);
-					setAlert(error.response.data.message || error.message, "error");
+					setAlert(
+						error.response.data.message
+							? error.response.data.message
+							: error.message,
+						"error"
+					);
 				}
 			});
 	};

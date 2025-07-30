@@ -87,7 +87,12 @@ export default function UserInstances(props: Props) {
 			})
 			.catch((error: any) => {
 				console.log(error);
-				setAlert(error.response.data.message || error.message, "error");
+				setAlert(
+					error.response.data.message
+						? error.response.data.message
+						: error.message,
+					"error"
+				);
 			});
 	};
 
@@ -106,7 +111,12 @@ export default function UserInstances(props: Props) {
 			})
 			.catch((error: any) => {
 				console.log(error);
-				setAlert(error.response.data.message || error.message, "error");
+				setAlert(
+					error.response.data.message
+						? error.response.data.message
+						: error.message,
+					"error"
+				);
 			});
 	};
 
@@ -124,7 +134,12 @@ export default function UserInstances(props: Props) {
 			})
 			.catch((error: any) => {
 				console.log(error);
-				setAlert(error.response.data.message || error.message, "error");
+				setAlert(
+					error.response.data.message
+						? error.response.data.message
+						: error.message,
+					"error"
+				);
 			});
 	};
 
@@ -136,7 +151,12 @@ export default function UserInstances(props: Props) {
 			})
 			.catch((error: any) => {
 				console.log(error);
-				setAlert(error.response.data.message || error.message, "error");
+				setAlert(
+					error.response.data.message
+						? error.response.data.message
+						: error.message,
+					"error"
+				);
 			});
 	};
 
@@ -162,7 +182,10 @@ export default function UserInstances(props: Props) {
 				break;
 			case "preset":
 				// Preset logic is only for admin instances
-				setAlert("Ta funkcja jest dostępna tylko dla instancji administratora.", "error");
+				setAlert(
+					"Ta funkcja jest dostępna tylko dla instancji administratora.",
+					"error"
+				);
 				break;
 		}
 	};

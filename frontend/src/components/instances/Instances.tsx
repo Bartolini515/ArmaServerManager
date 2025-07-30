@@ -130,7 +130,12 @@ export default function Instances() {
 					})
 					.catch((error: any) => {
 						console.log(error);
-						setAlert(error.response.data.message || error.message, "error");
+						setAlert(
+							error.response.data.message
+								? error.response.data.message
+								: error.message,
+							"error"
+						);
 						setDict((prev) => ({
 							...prev,
 							[Number(instanceId)]: {
