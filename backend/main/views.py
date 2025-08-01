@@ -275,6 +275,7 @@ class InstancesViewset(viewsets.ModelViewSet):
         if check_installed(wids=workshop_ids, mods_dir=mods_dir, log_callback=start_logger.log)[1]:
             start_logger.write_log_to_file()
             instance.is_ready = False
+            instance.save()
             return Response({"message": "Niektóre mody są niezainstalowane. Proszę je najpierw pobrać."}, status=400)
         if not check_sh_file_exists(instance.name, log_callback=start_logger.log):
             start_logger.write_log_to_file()

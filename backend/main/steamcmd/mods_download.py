@@ -28,10 +28,14 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
     mods_dir = config.get("paths.mods_directory", "")
     download_dir = config.get("paths.download_directory", "")
     steamcmd_dir = config.get("paths.steamcmd", "")
+    steamguard = None
+    def assign_new_steamguard():
+        nonlocal steamguard
+        steamguard = generate_steam_guard_code(config.get("steam_auth.shared_secret", ""))
     
-
+    
     login, password = load_credentials()
-    steamguard = generate_steam_guard_code(config.get("steam_auth.shared_secret", ""))
+    assign_new_steamguard()
     if logger:
         logger.log('Loaded login credentials.')
     
@@ -43,6 +47,7 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
         raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
 
     for mod in mods_to_download:
+        assign_new_steamguard()
         return_code = steamcmd_download(
             mod=mod,
             appid=appid,
@@ -55,6 +60,7 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
         )
 
         if return_code != 0:
+            assign_new_steamguard()
             if download_fallback(mod, appid, login, password, steamcmd_dir, ghost_folder.ghost_folder_path, steamguard, log_callback=logger.log if logger else None):
                 failed_mods.append(mod)
                 if logger:
