@@ -149,9 +149,10 @@ def test_connection(steamcmd_dir: str, login: str, password: str, steamguard: st
     Returns:
         bool: True if the connection is successful, False otherwise.
     """
-    args = ['bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}', f'+login {login} {password}']
+    args = ['bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}']
     if steamguard:
         args.append(f'+set_steam_guard_code {steamguard}')
+    args.append(f'+login {login} {password}')
     args.append("+quit")
 
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
