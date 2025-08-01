@@ -8,6 +8,7 @@ from .utils.logger import Logger
 import psutil
 from django.core.cache import cache
 from servermanager.celery import app as celery_app
+from celery.result import AsyncResult
 
 @shared_task(bind=True)
 def download_mods_task(self, instance_id: int, name: str, user: str, file_path: str, mods_directory: str) -> dict:
@@ -22,6 +23,16 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
     Returns:
         dict: The result of the download operation.
     """
+    cache_key = f"download_task_{instance_id}"
+    existing_task_id = cache.get(cache_key)
+
+    if existing_task_id:
+        existing_task = AsyncResult(existing_task_id)
+        if existing_task.state in ['PENDING', 'PROGRESS', 'STARTED']:
+            return {'status': 'Pobieranie jest już w toku.', 'task_id': existing_task_id}
+
+    cache.set(cache_key, self.request.id, timeout=7200)  # Timeout set to 2 hours
+
     try:
         self.update_state(state='PROGRESS', meta={'status': 'Rozpoczynanie pobierania...'})
         
@@ -42,9 +53,11 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
 
         self.update_state(state='SUCCESS', meta={'status': 'Pobieranie zakończone pomyślnie!'})
         Logger.write_all_logs(one_directory=True, user=user)
+        cache.delete(cache_key)
         return {'status': 'Pobieranie zakończone pomyślnie!'}
     except Exception as e:
         Logger.write_all_logs(one_directory=True, user=user)
+        cache.delete(cache_key)
         raise e
     
 @shared_task(bind=True)

@@ -337,6 +337,7 @@ class InstancesViewset(viewsets.ModelViewSet):
         if instance.is_running:
             return Response({"message": "Nie można zmienić presetu działającej instancji."}, status=400)
         
+        
 
         serializer = self.serializer_class(instance, data=request.data, partial=True)
         if serializer.is_valid():

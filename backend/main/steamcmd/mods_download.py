@@ -38,6 +38,9 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
     delete_steamcmd_appcache(steamcmd_dir, logger.log if logger else None)
 
     ghost_folder = GhostFolder(name=name, path=download_dir, log_callback=logger.log if logger else None)
+    
+    if not test_connection(steamcmd_dir, login, password, steamguard, log_callback=logger.log if logger else None):
+        raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
 
     for mod in mods_to_download:
         return_code = steamcmd_download(
@@ -132,3 +135,27 @@ def download_fallback(mod: str, appid: int, login: str, password: str, steamcmd_
                 log_callback(f"Successfully downloaded mod {mod} after retry.")
             return None
     return mod
+
+def test_connection(steamcmd_dir: str, login: str, password: str, steamguard: str = None, log_callback: callable = None) -> bool:
+    """Test connection to SteamCMD.
+
+    Args:
+        steamcmd_dir (str): The directory where SteamCMD is located.
+        login (str): The Steam username.
+        password (str): The Steam password.
+        steamguard (str, optional): The Steam Guard code. Defaults to None.
+        log_callback (callable, optional): A callback function for logging. Defaults to None.
+
+    Returns:
+        bool: True if the connection is successful, False otherwise.
+    """
+    args = ['bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}', f'+login {login} {password}']
+    if steamguard:
+        args.append(f'+set_steam_guard_code {steamguard}')
+    args.append("+quit")
+
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+    process.wait(timeout=10)
+    
+    return process.returncode == 0
