@@ -55,7 +55,7 @@ def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_
         script_file.write(f'./arma3server_x64 -port={port} -config="server_{username if not is_admin_instance else name}.cfg"')
 
         if mod_paths:
-            mod_paths = [os.path.join(mods_directory, os.path.basename(path)) for path in
+            mod_paths = [os.path.join(os.path.basename(mods_directory), os.path.basename(path)) for path in
                         mod_paths]
             mod_string = "-mod='" + "'\\;'".join(mod_paths) + "'"
             script_file.write(f" {mod_string}\n")

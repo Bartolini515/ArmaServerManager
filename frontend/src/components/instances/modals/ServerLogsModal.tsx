@@ -9,6 +9,7 @@ import {
 	Typography,
 } from "@mui/material";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
+import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import CloseIcon from "@mui/icons-material/Close";
 import AxiosInstance from "../../AxiosInstance";
@@ -89,6 +90,23 @@ export default function ServerLogsModal(props: Props) {
 			});
 	};
 
+	const DeleteLogs = (id: number) => {
+		AxiosInstance.delete(`instances/${id}/logs/delete/`)
+			.then((response) => {
+				setLogs("");
+				setAlert(response.data.message, "success");
+			})
+			.catch((error: any) => {
+				console.log(error);
+				setAlert(
+					error.response.data.message
+						? error.response.data.message
+						: error.message,
+					"error"
+				);
+			});
+	};
+
 	return (
 		<>
 			<Modal
@@ -156,6 +174,15 @@ export default function ServerLogsModal(props: Props) {
 							disabled={!logs || logs.length === 0}
 						>
 							<FileDownloadIcon />
+						</Button>
+						<Button
+							color="primary"
+							aria-label="delete log file"
+							component="label"
+							onClick={() => DeleteLogs(props.selectedInstanceId)}
+							disabled={!logs || logs.length === 0}
+						>
+							<DeleteForeverIcon />
 						</Button>
 					</Box>
 				</Fade>

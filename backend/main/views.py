@@ -426,6 +426,24 @@ class InstancesViewset(viewsets.ModelViewSet):
         response['Content-Disposition'] = f'attachment; filename="logs_{pk}.txt"'
         return response
     
+    @action(detail=True, methods=['delete'], url_path='logs/delete')
+    def delete_logs(self, request, pk=None):
+        try:
+            instance = Instances.objects.get(pk=pk)
+        except Instances.DoesNotExist:
+            return Response({"message": "Instancja nie została znaleziona"}, status=404)
+        
+        if instance.is_running:
+            return Response({"message": "Nie można usunąć logów podczas działania instancji"}, status=400)
+
+        if not instance.log_file:
+            return Response({"message": "Brak logów do usunięcia"}, status=404)
+
+        instance.log_file.delete()
+        instance.log_file = None
+        instance.save()
+        return Response({"message": "Logi zostały usunięte"}, status=200)
+    
 class MissionsViewset(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     queryset = Missions.objects.all()
