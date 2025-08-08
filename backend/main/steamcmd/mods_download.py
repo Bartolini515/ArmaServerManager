@@ -7,45 +7,35 @@ from ..utils.config import config
 from ..workaround.cache_deletion import delete_steamcmd_appcache
 from ..workaround.ghost_folder import GhostFolder
 from ..workaround.modsrenamer import lowercase_addons_directory
-
 from .steam_auth import load_credentials, generate_steam_guard_code
 
 
-def get_time_until_next_steamguard_change() -> float:
-    """Get the time in seconds until the next Steam Guard code change.
-    
-    Returns:
-        float: Seconds until next code change (0-30).
-    """
-    return 30 - (time() % 30)
+def assign_new_steamguard(steamguard, buffer_seconds: int = 7, log_callback: callable = None) -> str:
+    def _get_time_until_next_steamguard_change() -> float:
+        """Get the time in seconds until the next Steam Guard code change.
 
+        Returns:
+            float: Seconds until next code change (0-30).
+        """
+        return 30 - (time() % 30)
+    def _new_steamguard_code() -> str:
+        """Generate a new Steam Guard code.
 
-def is_in_steamguard_buffer_zone(buffer_seconds: int = 7) -> bool:
-    """Check if we're within the buffer zone around a Steam Guard code change.
-    
-    Args:
-        buffer_seconds (int): Buffer time in seconds around code changes.
-        
-    Returns:
-        bool: True if we're in the buffer zone, False otherwise.
-    """
-    time_until_change = get_time_until_next_steamguard_change()
-    return time_until_change <= buffer_seconds or time_until_change >= (30 - buffer_seconds)
+        Returns:
+            str: The new Steam Guard code.
+        """
+        return generate_steam_guard_code(config.get("steam_auth.shared_secret", ""))
 
-
-def wait_for_safe_steamguard_window(buffer_seconds: int = 7, log_callback: callable = None):
-    """Wait until we're outside the Steam Guard buffer zone.
-    
-    Args:
-        buffer_seconds (int): Buffer time in seconds around code changes.
-        log_callback (callable, optional): A callback function for logging.
-    """
-    while is_in_steamguard_buffer_zone(buffer_seconds):
-        time_until_change = get_time_until_next_steamguard_change()
+    # Generate a new Steam Guard code, ensuring it's different from the previous one
+    for _ in range(10):  # Retry up to 10 times
+        new_code = _new_steamguard_code()
+        if new_code != steamguard or new_code == "":
+            return new_code
+        time_until_change = _get_time_until_next_steamguard_change() + buffer_seconds
         if log_callback:
-            log_callback(f"Waiting {time_until_change:.1f}s to avoid Steam Guard code change...")
-        sleep(min(1, time_until_change + 1))
-
+            log_callback(f"Waiting {time_until_change:.1f}s to generate new Steam Guard code...")
+        sleep(time_until_change)
+    return ""
 
 def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> list[str] | None:
     """Downloads mods using SteamCMD.
@@ -65,13 +55,10 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
     download_dir = config.get("paths.download_directory", "")
     steamcmd_dir = config.get("paths.steamcmd", "")
     steamguard = None
-    def assign_new_steamguard():
-        nonlocal steamguard
-        steamguard = generate_steam_guard_code(config.get("steam_auth.shared_secret", ""))
     
     
     login, password = load_credentials()
-    assign_new_steamguard()
+    steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
     if logger:
         logger.log('Loaded login credentials.')
     
@@ -79,14 +66,12 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
 
     ghost_folder = GhostFolder(name=name, path=download_dir, log_callback=logger.log if logger else None)
     
-    if not test_connection(steamcmd_dir, login, password, steamguard, log_callback=logger.log if logger else None):
+    if not test_connection(steamcmd_dir, login, password, steamguard):
         raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
 
     for mod in mods_to_download:
-        # Wait for safe window before generating new Steam Guard code
-        wait_for_safe_steamguard_window(log_callback=logger.log if logger else None)
-        assign_new_steamguard()
-        
+        steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
+
         return_code = steamcmd_download(
             mod=mod,
             appid=appid,
@@ -99,8 +84,7 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
         )
 
         if return_code != 0:
-            wait_for_safe_steamguard_window(log_callback=logger.log if logger else None)
-            assign_new_steamguard()
+            steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
             if download_fallback(mod, appid, login, password, steamcmd_dir, ghost_folder.ghost_folder_path, steamguard, log_callback=logger.log if logger else None):
                 failed_mods.append(mod)
                 if logger:
@@ -175,8 +159,7 @@ def download_fallback(mod: str, appid: int, login: str, password: str, steamcmd_
         if log_callback:
             log_callback(f"Retrying download for mod {mod}...")
         sleep(60)
-        wait_for_safe_steamguard_window(log_callback=log_callback)
-        steamguard = generate_steam_guard_code(config.get("steam_auth.shared_secret", ""))
+        steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=log_callback)
         return_code = steamcmd_download(mod=mod, appid=appid, login=login, password=password, steamcmd_dir=steamcmd_dir, ghost_folder_path=ghost_folder_path, steamguard=steamguard, log_callback=log_callback, is_retry=True)
         if return_code == 0:
             if log_callback:
