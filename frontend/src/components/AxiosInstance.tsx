@@ -1,17 +1,26 @@
 import axios from "axios";
 
 const myBaseUrl = import.meta.env.VITE_BASE_URL || "http://127.0.0.1:8000/api/";
-const AxiosInstance = axios.create({
+const isDebug = import.meta.env.VITE_DEBUG === "true" || true;
+
+const config = {
 	baseURL: myBaseUrl,
 	timeout: 10000,
 	headers: {
 		"Content-Type": "application/json",
 		Accept: "application/json",
 	},
-	withCredentials: true,
-	xsrfCookieName: "csrftoken",
-	xsrfHeaderName: "X-CSRFToken",
-});
+} as any;
+
+if (!isDebug) {
+	Object.assign(config, {
+		withCredentials: true,
+		xsrfCookieName: "csrftoken",
+		xsrfHeaderName: "X-CSRFToken",
+	});
+}
+
+const AxiosInstance = axios.create(config);
 
 AxiosInstance.interceptors.request.use((config) => {
 	const token = localStorage.getItem("Token");

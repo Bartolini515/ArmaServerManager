@@ -3,9 +3,9 @@ import {
 	Backdrop,
 	Box,
 	Button,
+	CircularProgress,
 	Fade,
 	Modal,
-	TextField,
 	Typography,
 } from "@mui/material";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
@@ -40,6 +40,8 @@ export default function ServerLogsModal(props: Props) {
 	const { setAlert } = useAlert();
 	const [logs, setLogs] = useState("");
 	const logTextArea = useRef<HTMLTextAreaElement>(null);
+	// const [tailLines, setTailLines] = useState(1000);
+	const [loading, setLoading] = useState(true);
 
 	useEffect(() => {
 		if (props.selectedInstanceId !== null) {
@@ -48,21 +50,24 @@ export default function ServerLogsModal(props: Props) {
 	}, [props.selectedInstanceId]);
 
 	const GetLogs = (id: number) => {
-		AxiosInstance.get(`instances/${id}/logs/`)
+		AxiosInstance.get(`instances/${id}/logs/`, { params: { tail: 2000 } })
 			.then((response) => {
-				setLogs(response.data);
+				const newLogs: string = response.data;
+				setLogs((prev) => (prev === newLogs ? prev : newLogs));
 				if (logTextArea.current) {
 					logTextArea.current.scrollTop = logTextArea.current.scrollHeight;
 				}
+				setLoading(false);
 			})
 			.catch((error: any) => {
 				console.log(error);
 				setAlert(
-					error.response.data.message
+					error.response?.data?.message
 						? error.response.data.message
 						: error.message,
 					"error"
 				);
+				setLoading(false);
 			});
 	};
 
@@ -82,7 +87,7 @@ export default function ServerLogsModal(props: Props) {
 			.catch((error: any) => {
 				console.log(error);
 				setAlert(
-					error.response.data.message
+					error.response?.data?.message
 						? error.response.data.message
 						: error.message,
 					"error"
@@ -99,7 +104,7 @@ export default function ServerLogsModal(props: Props) {
 			.catch((error: any) => {
 				console.log(error);
 				setAlert(
-					error.response.data.message
+					error.response?.data?.message
 						? error.response.data.message
 						: error.message,
 					"error"
@@ -153,10 +158,32 @@ export default function ServerLogsModal(props: Props) {
 						>
 							<CloseIcon sx={{ color: "red" }} fontSize="medium" />
 						</Button>
-						{!logs || logs.length === 0 ? (
+						{loading ? (
+							<Box sx={{ display: "flex", justifyContent: "center", mt: 2 }}>
+								<CircularProgress />
+							</Box>
+						) : !logs || logs.length === 0 ? (
 							<Typography m={2}>Brak logów do wyświetlenia</Typography>
 						) : (
-							<TextField multiline value={logs} disabled fullWidth rows={25} />
+							<Box
+								component="pre"
+								ref={logTextArea}
+								sx={{
+									fontFamily: "monospace",
+									fontSize: "0.75rem",
+									m: 0,
+									p: 1,
+									maxHeight: "60vh",
+									overflowY: "auto",
+									whiteSpace: "pre-wrap",
+									backgroundColor: "#111",
+									color: "#ddd",
+									border: "1px solid #333",
+									borderRadius: 1,
+								}}
+							>
+								{logs}
+							</Box>
 						)}
 						<Button
 							color="primary"

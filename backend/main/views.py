@@ -407,9 +407,35 @@ class InstancesViewset(viewsets.ModelViewSet):
             instance = Instances.objects.get(pk=pk)
         except Instances.DoesNotExist:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
+        
+        tail = request.query_params.get('tail')
+        try:
+            tail = int(tail) if tail else None
+        except ValueError:
+            return Response({"message": "Nieprawidłowa wartość parametru tail"}, status=400)
 
-        logs = instance.get_logs()
-        return Response(logs, status=200)
+        log_path = instance.log_file.path if instance.log_file else None
+        if log_path and os.path.exists(log_path):
+            if tail:
+                with open(log_path, 'rb') as f:
+                    f.seek(0, os.SEEK_END)
+                    buffer = bytearray()
+                    pointer = f.tell()
+                    line_count = 0
+                    while pointer > 0 and line_count < tail:
+                        read_size = min(4096, pointer)
+                        pointer -= read_size
+                        f.seek(pointer)
+                        chunk = f.read(read_size)
+                        buffer.extend(chunk)
+                        line_count = buffer.count(b'\n')
+                    content = b'\n'.join(buffer.rstrip(b'\n').splitlines()[-tail:]).decode(errors='replace')
+            else:
+                with open(log_path, 'r', errors='replace') as f:
+                    content = f.read()
+            return Response(content, content_type="text/plain", status=200)
+        else:
+            return Response({"message": "Brak logów lub plik nie istnieje."}, status=404)
 
     @action(detail=True, methods=['get'], url_path='logs/download')
     def download_logs(self, request, pk=None):

@@ -169,7 +169,7 @@ def download_fallback(mod: str, appid: int, login: str, password: str, steamcmd_
         Returns:
             str | None: The workshop ID of the mod if the download fails again, otherwise None.
     """
-    stop_time = time() + 3600  # 60 minutes timeout
+    stop_time = time() + 7200  # 120 minutes timeout
     while time() < stop_time:
         if log_callback:
             log_callback(f"Retrying download for mod {mod}...")
