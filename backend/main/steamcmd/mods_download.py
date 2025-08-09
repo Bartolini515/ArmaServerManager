@@ -1,3 +1,4 @@
+import math
 import os
 import subprocess
 from time import sleep, time
@@ -37,14 +38,15 @@ def assign_new_steamguard(steamguard, buffer_seconds: int = 7, log_callback: cal
         sleep(time_until_change)
     return ""
 
-def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> list[str] | None:
+def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: int = 10) -> list[str] | None:
     """Downloads mods using SteamCMD.
 
     Args:
         mods_to_download (list[str]): The list of workshop IDs for the mods to download.
         name (str): The name of the mod set being downloaded.
         logger (Logger): Logger instance for logging download progress.
-    
+        lim (int): The maximum number of downloads in one batch.
+
     Returns:
         list[str]: A list containing mods that failed to download, if any.
 
@@ -68,12 +70,15 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
     
     if not test_connection(steamcmd_dir, login, password, steamguard):
         raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
+    
+    for i in range(math.ceil(len(mods_to_download) / lim)):
+        batch = mods_to_download[i * lim:min((i + 1) * lim, len(mods_to_download))]
 
-    for mod in mods_to_download:
+
         steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
 
         return_code = steamcmd_download(
-            mod=mod,
+            mod=batch,
             appid=appid,
             login=login,
             password=password,
@@ -83,12 +88,18 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
             log_callback=logger.log if logger else None
         )
 
-        if return_code != 0:
-            steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
-            if download_fallback(mod, appid, login, password, steamcmd_dir, ghost_folder.ghost_folder_path, steamguard, log_callback=logger.log if logger else None):
+        if return_code == 84:
+            for mod in batch:
                 failed_mods.append(mod)
-                if logger:
-                    logger.log(f"Failed to download mod {mod}.")
+            time.sleep(600)  # Wait for 10 minutes to avoid rate limiting
+            continue
+        elif return_code != 0:
+            steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
+            for mod in batch:
+                if download_fallback(mod, appid, login, password, steamcmd_dir, ghost_folder.ghost_folder_path, steamguard, log_callback=logger.log if logger else None):
+                    failed_mods.append(mod)
+                    if logger:
+                        logger.log(f"Failed to download mod {mod}.")
 
     for wid in mods_to_download:
         lowercase_addons_directory(wid, os.path.join(ghost_folder.ghost_folder_path, "steamapps/workshop/content/107410"), log_callback=logger.log if logger else None)
@@ -103,11 +114,11 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
         logger.log("All mods downloaded successfully.")
     return None
 
-def steamcmd_download(mod: str, appid: int, login: str, password: str, steamcmd_dir: str, ghost_folder_path: str, steamguard: str = None, log_callback: callable = None, is_retry: bool = False) -> int:
+def steamcmd_download(mod: str | list[str], appid: int, login: str, password: str, steamcmd_dir: str, ghost_folder_path: str, steamguard: str = None, log_callback: callable = None, is_retry: bool = False) -> int:
     """Download a mod using SteamCMD.
 
     Args:
-        mod (str): The workshop ID of the mod to download.
+        mod (str | list[str]): The workshop ID or ID's of the mod to download.
         appid (int): The app ID of the game (Arma 3).
         login (str): The Steam username.
         password (str): The Steam password.
@@ -129,7 +140,11 @@ def steamcmd_download(mod: str, appid: int, login: str, password: str, steamcmd_
     if is_retry:
         args.append(f'+workshop_download_item {appid} {int(mod)} validate')
     else:
-        args.append(f'+workshop_download_item {appid} {int(mod)}')
+        if isinstance(mod, list):
+            for m in mod:
+                args.append(f'+workshop_download_item {appid} {int(m)}')
+        else:
+            args.append(f'+workshop_download_item {appid} {int(mod)}')
     args.append("+quit")
 
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
