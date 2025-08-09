@@ -70,18 +70,22 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
         raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
 
     for mod in mods_to_download:
+        steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
 
         return_code = steamcmd_download(
             mod=mod,
             appid=appid,
             login=login,
+            password=password,
             steamcmd_dir=steamcmd_dir,
             ghost_folder_path=ghost_folder.ghost_folder_path,
+            steamguard=steamguard,
             log_callback=logger.log if logger else None
         )
 
         if return_code != 0:
-            if download_fallback(mod, appid, login, steamcmd_dir, ghost_folder.ghost_folder_path, steamguard=steamguard, log_callback=logger.log if logger else None):
+            steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
+            if download_fallback(mod, appid, login, password, steamcmd_dir, ghost_folder.ghost_folder_path, steamguard, log_callback=logger.log if logger else None):
                 failed_mods.append(mod)
                 if logger:
                     logger.log(f"Failed to download mod {mod}.")
@@ -99,15 +103,17 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger) -> lis
         logger.log("All mods downloaded successfully.")
     return None
 
-def steamcmd_download(mod: str, appid: int, login: str, steamcmd_dir: str, ghost_folder_path: str, log_callback: callable = None, is_retry: bool = False) -> int:
+def steamcmd_download(mod: str, appid: int, login: str, password: str, steamcmd_dir: str, ghost_folder_path: str, steamguard: str = None, log_callback: callable = None, is_retry: bool = False) -> int:
     """Download a mod using SteamCMD.
 
     Args:
         mod (str): The workshop ID of the mod to download.
         appid (int): The app ID of the game (Arma 3).
         login (str): The Steam username.
+        password (str): The Steam password.
         steamcmd_dir (str): The directory where SteamCMD is located.
         ghost_folder_path (str): The path to the ghost folder.
+        steamguard (str, optional): The Steam Guard code. Defaults to None.
         log_callback (callable, optional): A callback function for logging. Defaults to None.
         is_retry (bool, optional): Whether this is a retry of a failed download. Defaults to False.
 
@@ -116,7 +122,10 @@ def steamcmd_download(mod: str, appid: int, login: str, steamcmd_dir: str, ghost
     """
     args = ['bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}', f'+force_install_dir {ghost_folder_path}']
 
-    args.append(f'+login {login}')
+    if steamguard:
+        args.append(f'+set_steam_guard_code {steamguard}')
+
+    args.append(f'+login {login} {password}')
     if is_retry:
         args.append(f'+workshop_download_item {appid} {int(mod)} validate')
     else:
@@ -129,7 +138,7 @@ def steamcmd_download(mod: str, appid: int, login: str, steamcmd_dir: str, ghost
     
     return process.returncode
 
-def download_fallback(mod: str, appid: int, login: str, steamcmd_dir: str, ghost_folder_path: str, steamguard: str = None, log_callback: callable = None) -> str | None:
+def download_fallback(mod: str, appid: int, login: str, password: str, steamcmd_dir: str, ghost_folder_path: str, steamguard: str = None, log_callback: callable = None) -> str | None:
     """Attempt to download failed mod again.
 
         Args:
@@ -150,14 +159,8 @@ def download_fallback(mod: str, appid: int, login: str, steamcmd_dir: str, ghost
         if log_callback:
             log_callback(f"Retrying download for mod {mod}...")
         sleep(60)
-        
         steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=log_callback)
-        if not test_connection(steamcmd_dir, login, steamguard=steamguard):
-            if log_callback:
-                log_callback("Failed to connect to SteamCMD during retry.")
-            return mod
-        
-        return_code = steamcmd_download(mod=mod, appid=appid, login=login, steamcmd_dir=steamcmd_dir, ghost_folder_path=ghost_folder_path, log_callback=log_callback, is_retry=True)
+        return_code = steamcmd_download(mod=mod, appid=appid, login=login, password=password, steamcmd_dir=steamcmd_dir, ghost_folder_path=ghost_folder_path, steamguard=steamguard, log_callback=log_callback, is_retry=True)
         if return_code == 0:
             if log_callback:
                 log_callback(f"Successfully downloaded mod {mod} after retry.")
@@ -179,7 +182,7 @@ def test_connection(steamcmd_dir: str, login: str, password: str, steamguard: st
     args = ['bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}']
     if steamguard:
         args.append(f'+set_steam_guard_code {steamguard}')
-    args.append(f'+login {login} {password} -rememberpassword')
+    args.append(f'+login {login} {password}')
     args.append("+quit")
 
     process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
