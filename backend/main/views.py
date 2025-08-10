@@ -429,7 +429,7 @@ class InstancesViewset(viewsets.ModelViewSet):
                         chunk = f.read(read_size)
                         buffer.extend(chunk)
                         line_count = buffer.count(b'\n')
-                    content = b'\n'.join(buffer.rstrip(b'\n').splitlines()[-tail:]).decode(errors='replace')
+                    content = b'\n'.join(reversed(buffer.rstrip(b'\n').splitlines()[-tail:])).decode(errors='replace')
             else:
                 with open(log_path, 'r', errors='replace') as f:
                     content = f.read()
@@ -444,8 +444,11 @@ class InstancesViewset(viewsets.ModelViewSet):
         except Instances.DoesNotExist:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
 
-        logs = instance.get_logs()
-        if not logs:
+        log_path = instance.log_file.path if instance.log_file else None
+        if log_path and os.path.exists(log_path):
+            with open(log_path, 'r', errors='replace') as f:
+                        logs = f.read()
+        else:
             return Response({"message": "Brak logów do pobrania"}, status=404)
 
         response = HttpResponse(logs, content_type="text/plain")
