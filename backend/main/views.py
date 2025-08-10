@@ -354,7 +354,7 @@ class InstancesViewset(viewsets.ModelViewSet):
         
         if instance.start_file_path and os.path.exists(instance.start_file_path):
             os.remove(instance.start_file_path)
-        start_file_path = generate_sh_file(instance.name, instance.port.port_number, user.username, mod_paths, config.get("paths.mods_directory"), config.get("paths.arma3"), log_callback=change_preset_logger.log)
+        start_file_path = generate_sh_file(instance.name, instance.port.port_number, user.username, mod_paths, config.get("paths.mods_directory"), config.get("paths.arma3"), log_callback=change_preset_logger.log, is_admin_instance=True)
         instance.start_file_path = start_file_path
         instance.is_ready = False
         instance.save()
