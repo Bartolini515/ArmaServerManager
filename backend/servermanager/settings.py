@@ -39,8 +39,8 @@ DEBUG = env.bool('DEBUG', default=False)
 
 ALLOWED_HOSTS = [
     '127.0.0.1', # localhost
-    'fogarma3.pl:8121', # Server IP
-    'servermanager.fogarma3.pl:8121',
+    'servermanager.fogarma3.pl', # Server IP
+    
 ]
 
 
@@ -176,8 +176,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # CORS_ALLOW_ALL_ORIGINS = True # SECURITY WARNING: Don't run in production!
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',  # React dev server
-    'https://fogarma3.pl:8121',  # Production server (HTTPS)
-    'https://servermanager.fogarma3.pl:8121',
+    'https://servermanager.fogarma3.pl',  # Production server (HTTPS)
 ]
 CORS_ALLOW_CREDENTIALS = not DEBUG
 
