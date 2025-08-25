@@ -37,15 +37,9 @@ SECRET_KEY = env('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool('DEBUG', default=False)
 
-ALLOWED_HOSTS = [
-    '127.0.0.1', # localhost
-    'servermanager.fogarma3.pl', # Server IP
-    
-]
-
+ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['127.0.0.1'])
 
 # Application definition
-
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -174,10 +168,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS Headers
 # CORS_ALLOW_ALL_ORIGINS = True # SECURITY WARNING: Don't run in production!
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',  # React dev server
-    'https://servermanager.fogarma3.pl',  # Production server (HTTPS)
-]
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=['http://localhost:5173'])
 CORS_ALLOW_CREDENTIALS = not DEBUG
 
 # SSL configuration and other security settings
@@ -186,10 +177,7 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
 SECURE_HSTS_PRELOAD = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_SECURE = not DEBUG
-CSRF_TRUSTED_ORIGINS = [
-    'https://fogarma3.pl:8121',
-    'https://servermanager.fogarma3.pl:8121',
-]
+CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=[])
 
 # Max upload size
 DATA_UPLOAD_MAX_MEMORY_SIZE = 268435456  # 256MB
