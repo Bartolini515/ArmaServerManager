@@ -419,17 +419,22 @@ class InstancesViewset(viewsets.ModelViewSet):
             if tail:
                 with open(log_path, 'rb') as f:
                     f.seek(0, os.SEEK_END)
-                    buffer = bytearray()
-                    pointer = f.tell()
-                    line_count = 0
-                    while pointer > 0 and line_count < tail:
-                        read_size = min(4096, pointer)
-                        pointer -= read_size
-                        f.seek(pointer)
-                        chunk = f.read(read_size)
-                        buffer.extend(chunk)
-                        line_count = buffer.count(b'\n')
-                    content = b'\n'.join(reversed(buffer.rstrip(b'\n').splitlines()[-tail:])).decode(errors='replace')
+                    buffer_size = 4096
+                    file_size = f.tell()
+                    buffer = b''
+                    lines_found = 0
+                    
+                    # Read file in chunks from the end
+                    while lines_found < tail and file_size > 0:
+                        read_pos = max(0, file_size - buffer_size)
+                        f.seek(read_pos)
+                        chunk = f.read(min(buffer_size, file_size))
+                        buffer = chunk + buffer
+                        lines_found = buffer.count(b'\n')
+                        file_size -= buffer_size
+                    
+                    lines = buffer.splitlines()
+                    content = b'\n'.join(lines[-tail:]).decode(errors='replace')
             else:
                 with open(log_path, 'r', errors='replace') as f:
                     content = f.read()
