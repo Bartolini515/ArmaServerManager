@@ -8,3 +8,9 @@
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
 }
+
+#copyright {
+	text-align: center;
+	font-size: 0.8em;
+	color: #888;
+}
