@@ -371,6 +371,10 @@ class InstancesViewset(viewsets.ModelViewSet):
                 return Response({"message": "Nie znaleziono administratora."}, status=404)
         else:
             user = self.request.user
+            
+        disk = psutil.disk_usage("/")
+        if disk.free < 20 * 1024 * 1024 * 1024:
+            return Response({"message": "Brak miejsca na dysku. Skontaktuj sie z administratorem."}, status=400)
         
         try:
             task = download_mods_task.delay(

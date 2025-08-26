@@ -38,7 +38,7 @@ def assign_new_steamguard(steamguard, buffer_seconds: int = 7, log_callback: cal
         sleep(time_until_change)
     return ""
 
-def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: int = 10) -> list[str] | None:
+def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: int = 10, progress_callback: callable = None) -> list[str] | None:
     """Downloads mods using SteamCMD.
 
     Args:
@@ -46,6 +46,7 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: i
         name (str): The name of the mod set being downloaded.
         logger (Logger): Logger instance for logging download progress.
         lim (int): The maximum number of downloads in one batch.
+        progress_callback (callable, optional): Callback function to report download progress.
 
     Returns:
         list[str]: A list containing mods that failed to download, if any.
@@ -70,7 +71,9 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: i
     
     if not test_connection(steamcmd_dir, login, password, steamguard):
         raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
-    
+
+    progress_callback(0, len(mods_to_download))
+
     for i in range(math.ceil(len(mods_to_download) / lim)):
         batch = mods_to_download[i * lim:min((i + 1) * lim, len(mods_to_download))]
 
@@ -100,6 +103,7 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: i
                     failed_mods.append(mod)
                     if logger:
                         logger.log(f"Failed to download mod {mod}.")
+        progress_callback(min((i + 1) * lim, len(mods_to_download)), len(mods_to_download))
 
     for wid in mods_to_download:
         lowercase_addons_directory(wid, os.path.join(ghost_folder.ghost_folder_path, "steamapps/workshop/content/107410"), log_callback=logger.log if logger else None)

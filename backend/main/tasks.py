@@ -31,7 +31,7 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
         if existing_task.state in ['PENDING', 'PROGRESS', 'STARTED']:
             return {'status': 'Pobieranie jest już w toku.', 'task_id': existing_task_id}
 
-    cache.set(cache_key, self.request.id, timeout=7200)  # Timeout set to 2 hours
+    cache.set(cache_key, self.request.id, timeout=14400)  # Timeout set to 4 hours
 
     try:
         self.update_state(state='PROGRESS', meta={'status': 'Rozpoczynanie pobierania...'})
@@ -41,8 +41,16 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
         workshop_ids = preset_parser(file_path, log_callback=operations_logger.log)
         mods_to_download = check_installed(wids=workshop_ids, mods_dir=mods_directory, log_callback=operations_logger.log)[1]
         if mods_to_download:
-            self.update_state(state='PROGRESS', meta={'status': 'Pobieranie modów...'})
-            failed_mods = download_mods(mods_to_download=mods_to_download, name=name, logger=download_logger)
+            def progress_callback(current: int, total: int):
+                """Update the task state with the current download progress.
+
+                Args:
+                    current (int): The number of mods downloaded so far.
+                    total (int): The total number of mods to download.
+                """
+                self.update_state(state='PROGRESS', meta={'status': f'Pobieranie modów... {current}/{total}'})
+
+            failed_mods = download_mods(mods_to_download=mods_to_download, name=name, logger=download_logger, progress_callback=progress_callback)
 
             if failed_mods:
                 raise Exception(f'Nie udało się pobrać modów: {failed_mods}')
