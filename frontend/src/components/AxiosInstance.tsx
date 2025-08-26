@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const myBaseUrl = import.meta.env.VITE_BASE_URL || "http://127.0.0.1:8000/api/";
-const isDebug = import.meta.env.VITE_DEBUG === "true" || true;
+const isDebug = import.meta.env.VITE_DEBUG !== "false";
 
 const config = {
 	baseURL: myBaseUrl,
