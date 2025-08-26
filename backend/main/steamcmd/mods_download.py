@@ -72,7 +72,8 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: i
     if not test_connection(steamcmd_dir, login, password, steamguard):
         raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
 
-    progress_callback(0, len(mods_to_download))
+    if progress_callback:
+        progress_callback(0, len(mods_to_download))
 
     for i in range(math.ceil(len(mods_to_download) / lim)):
         batch = mods_to_download[i * lim:min((i + 1) * lim, len(mods_to_download))]
@@ -103,7 +104,8 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: i
                     failed_mods.append(mod)
                     if logger:
                         logger.log(f"Failed to download mod {mod}.")
-        progress_callback(min((i + 1) * lim, len(mods_to_download)), len(mods_to_download))
+        if progress_callback:
+            progress_callback(min((i + 1) * lim, len(mods_to_download)), len(mods_to_download))
 
     for wid in mods_to_download:
         lowercase_addons_directory(wid, os.path.join(ghost_folder.ghost_folder_path, "steamapps/workshop/content/107410"), log_callback=logger.log if logger else None)
