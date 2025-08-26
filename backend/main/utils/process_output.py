@@ -15,6 +15,7 @@ def reader_thread(pipe, log_callback: callable = None) -> None:
                 processed_line = line.strip() + '\n'
 
             if log_callback:
+                print(processed_line)
                 log_callback(processed_line)
             else:
                 print(processed_line)

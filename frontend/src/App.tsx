@@ -1,5 +1,6 @@
 import { Routes, Route, useLocation } from "react-router";
 import "./App.css";
+import "./index.css";
 import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFnsV3";
 import { LocalizationProvider } from "@mui/x-date-pickers";
 import { de } from "date-fns/locale";
