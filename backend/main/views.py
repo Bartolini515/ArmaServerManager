@@ -255,8 +255,8 @@ class InstancesViewset(viewsets.ModelViewSet):
 
         if instance.is_running:
             return Response({"message": "Instancja jest już uruchomiona"}, status=400)
-        
-        if self.queryset.filter(user=user, is_running=True).exists():
+
+        if self.queryset.filter(user=user, is_running=True).exists() and not instance.is_admin_instance:
             return Response({"message": "Nie można posiadać uruchomionej więcej niż jednej instancji"}, status=400)
         
         if self.queryset.filter(is_admin_instance=False, is_running=True).count() >= 5 and not user.is_staff:
