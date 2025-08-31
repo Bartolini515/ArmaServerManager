@@ -6,6 +6,7 @@ import { useForm } from "react-hook-form";
 import AxiosInstance from "../AxiosInstance";
 import { useNavigate } from "react-router-dom";
 import { useAlert } from "../../contexts/AlertContext";
+import { useCustomTheme } from "../../contexts/ThemeContext";
 
 interface FormData {
 	password?: string;
@@ -22,6 +23,7 @@ export default function ChangePasswordLogin() {
 	});
 	const [showMessage, setShowMessage] = useState(false);
 	const { setAlert } = useAlert();
+	const { mode } = useCustomTheme();
 
 	const submission = (data: FormData) => {
 		if (data.password !== data.confirmPassword) {
@@ -72,15 +74,15 @@ export default function ChangePasswordLogin() {
 				justifyContent: "center",
 				alignItems: "center",
 				minHeight: "100vh",
-				backgroundColor: "#f5f5f5",
+				backgroundColor: mode === "light" ? "#f5f5f5" : "#121212",
 			}}
 		>
 			<form onSubmit={handleSubmit(submission)}>
 				<Box
 					sx={{
-						width: 300,
+						width: 350,
 						padding: 4,
-						backgroundColor: "white",
+						backgroundColor: mode === "light" ? "white" : "#1e1e1e",
 						borderRadius: 2,
 						boxShadow: "0 4px 8px rgba(0, 0, 0, 0.1)",
 					}}

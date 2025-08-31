@@ -9,7 +9,7 @@ import AxiosInstance from "../AxiosInstance";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { useAlert } from "../../contexts/AlertContext";
-// import MyMessage from "./Message";
+import { useCustomTheme } from "../../contexts/ThemeContext";
 
 interface FormData {
 	username?: string;
@@ -27,6 +27,7 @@ export default function Login() {
 	const [showMessage, setShowMessage] = useState(false);
 	const { setIsAdmin, setUser } = useAuth();
 	const { setAlert } = useAlert();
+	const { mode } = useCustomTheme();
 
 	const submission = (data: FormData) => {
 		AxiosInstance.post(`login/`, {
@@ -63,9 +64,15 @@ export default function Login() {
 							message: serverErrors[field][0],
 						});
 					});
-				} else {
+				} else if (error.response && error.response.status === 401) {
 					console.log(error);
 					setAlert("Nieprawidłowe dane logowania", "error");
+				} else {
+					console.log(error);
+					setAlert(
+						"Wystąpił błąd, spróbuj ponownie później: " + error.message,
+						"error"
+					);
 				}
 			});
 	};
@@ -84,15 +91,15 @@ export default function Login() {
 				justifyContent: "center",
 				alignItems: "center",
 				minHeight: "100vh",
-				backgroundColor: "#f5f5f5",
+				backgroundColor: mode === "light" ? "#f5f5f5" : "#121212",
 			}}
 		>
 			<form onSubmit={handleSubmit(submission)}>
 				<Box
 					sx={{
-						width: 300,
+						width: 350,
 						padding: 4,
-						backgroundColor: "white",
+						backgroundColor: mode === "light" ? "white" : "#1e1e1e",
 						borderRadius: 2,
 						boxShadow: "0 4px 8px rgba(0, 0, 0, 0.1)",
 					}}
@@ -112,7 +119,7 @@ export default function Login() {
 								textAlign: "center",
 							}}
 						>
-							Logowanie nie powiodło się, proszę spróbować ponownie.
+							Logowanie nie powiodło się
 						</Typography>
 					)}
 
