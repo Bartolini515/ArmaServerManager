@@ -10,6 +10,12 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { useAlert } from "../../contexts/AlertContext";
 import { useCustomTheme } from "../../contexts/ThemeContext";
+import {
+	getApiErrorData,
+	getApiErrorMessage,
+	getApiErrorStatus,
+	getFieldErrorMessage,
+} from "../../util/api-error";
 
 interface FormData {
 	username?: string;
@@ -50,28 +56,25 @@ export default function Login() {
 					setAlert(response.data.message, "success");
 				}
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				setShowMessage(true);
-				if (
-					error.response &&
-					error.response.data &&
-					error.response.status === 400
-				) {
-					const serverErrors = error.response.data;
+				const serverErrors = getApiErrorData(error);
+				if (getApiErrorStatus(error) === 400 && serverErrors) {
 					Object.keys(serverErrors).forEach((field) => {
 						setError(field as keyof FormData, {
 							type: "server",
-							message: serverErrors[field][0],
+							message: getFieldErrorMessage(serverErrors, field),
 						});
 					});
-				} else if (error.response && error.response.status === 401) {
+				} else if (getApiErrorStatus(error) === 401) {
 					console.log(error);
 					setAlert("Nieprawidłowe dane logowania", "error");
 				} else {
 					console.log(error);
 					setAlert(
-						"Wystąpił błąd, spróbuj ponownie później: " + error.message,
-						"error"
+						"Wystąpił błąd, spróbuj ponownie później: " +
+							getApiErrorMessage(error, "Nieznany błąd"),
+						"error",
 					);
 				}
 			});

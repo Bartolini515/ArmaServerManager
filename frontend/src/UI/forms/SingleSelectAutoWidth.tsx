@@ -6,8 +6,8 @@ import ListItemText from "@mui/material/ListItemText";
 
 interface Props {
 	options: { id: number; option: string; label?: string }[];
-	selectedOption: any;
-	setSelectedOption: (value: any) => void;
+	selectedOption: string;
+	setSelectedOption: (value: string) => void;
 	label: string;
 }
 

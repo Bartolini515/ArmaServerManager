@@ -4,6 +4,7 @@ import AxiosInstance from "../AxiosInstance";
 import InstanceCard from "./InstanceCard";
 import { Stack, Typography } from "@mui/material";
 import ServerLogsModal from "./modals/ServerLogsModal";
+import { getApiErrorMessage } from "../../util/api-error";
 
 interface Instance {
 	id: number;
@@ -85,14 +86,9 @@ export default function UserInstances(props: Props) {
 					},
 				}));
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -109,14 +105,9 @@ export default function UserInstances(props: Props) {
 					},
 				}));
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -132,14 +123,9 @@ export default function UserInstances(props: Props) {
 					},
 				}));
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -149,14 +135,9 @@ export default function UserInstances(props: Props) {
 				setAlert(response.data.message, "success");
 				props.setRefresh(true);
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 

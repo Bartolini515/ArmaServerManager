@@ -6,13 +6,13 @@ import Select, { type SelectChangeEvent } from "@mui/material/Select";
 
 interface Props {
 	options: { id: number; option: string }[];
-	selectedOption: any;
-	setSelectedOption: (value: any) => void;
+	selectedOption: string | number;
+	setSelectedOption: (value: string | number) => void;
 	label: string;
 }
 
 export default function BasicSelect(props: Props) {
-	const handleChange = (event: SelectChangeEvent) => {
+	const handleChange = (event: SelectChangeEvent<string | number>) => {
 		props.setSelectedOption(event.target.value as string);
 	};
 
@@ -20,7 +20,7 @@ export default function BasicSelect(props: Props) {
 		<Box sx={{ minWidth: 120, margin: "8px" }}>
 			<FormControl fullWidth>
 				<InputLabel id="simple-select-label">{props.label}</InputLabel>
-				<Select
+				<Select<string | number>
 					labelId="simple-select-label"
 					id="simple-select"
 					value={props.selectedOption}

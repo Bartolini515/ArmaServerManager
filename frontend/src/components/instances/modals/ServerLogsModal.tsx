@@ -14,6 +14,7 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import CloseIcon from "@mui/icons-material/Close";
 import AxiosInstance from "../../AxiosInstance";
 import { useAlert } from "../../../contexts/AlertContext";
+import { getApiErrorMessage } from "../../../util/api-error";
 
 const style = {
 	position: "absolute",
@@ -59,14 +60,9 @@ export default function ServerLogsModal(props: Props) {
 				}
 				setLoading(false);
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 				setLoading(false);
 			});
 	};
@@ -84,14 +80,9 @@ export default function ServerLogsModal(props: Props) {
 				document.body.removeChild(a);
 				window.URL.revokeObjectURL(url);
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -101,14 +92,9 @@ export default function ServerLogsModal(props: Props) {
 				setLogs("");
 				setAlert(response.data.message, "success");
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 

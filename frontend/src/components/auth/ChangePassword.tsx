@@ -7,6 +7,12 @@ import AxiosInstance from "../AxiosInstance";
 import { useNavigate } from "react-router-dom";
 import { useAlert } from "../../contexts/AlertContext";
 import { useCustomTheme } from "../../contexts/ThemeContext";
+import {
+	getApiErrorData,
+	getApiErrorMessage,
+	getApiErrorStatus,
+	getFieldErrorMessage,
+} from "../../util/api-error";
 
 interface FormData {
 	password?: string;
@@ -37,32 +43,23 @@ export default function ChangePasswordLogin() {
 		AxiosInstance.post(`account/change_password/`, {
 			password: data.password,
 		})
-			.then((response: any) => {
+			.then((response) => {
 				navigate(`/dashboard`);
 				setAlert(response.data.message, "success");
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				setShowMessage(true);
-				if (
-					error.response &&
-					error.response.data &&
-					error.response.status === 400
-				) {
-					const serverErrors = error.response.data;
+				const serverErrors = getApiErrorData(error);
+				if (getApiErrorStatus(error) === 400 && serverErrors) {
 					Object.keys(serverErrors).forEach((field) => {
 						setError(field as keyof FormData, {
 							type: "server",
-							message: serverErrors[field][0],
+							message: getFieldErrorMessage(serverErrors, field),
 						});
 					});
 				} else {
 					console.log(error);
-					setAlert(
-						error.response.data.message
-							? error.response.data.message
-							: error.message,
-						"error"
-					);
+					setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 				}
 			});
 	};

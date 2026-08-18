@@ -157,7 +157,10 @@ class MissionSerializer(serializers.ModelSerializer):
     
     def create(self, validated_data):
         """
-        Creates a new mission, replacing any existing mission with the same filename.
+        Create a mission, replacing an existing record with the same stored filename.
+
+        The replacement removes the old model and file before saving the new upload;
+        this is intentionally not a versioned mission history.
         """
         mission_file = validated_data['mission_file']
         

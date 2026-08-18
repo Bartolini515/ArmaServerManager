@@ -7,27 +7,34 @@ import FormControl from "@mui/material/FormControl";
 import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
 import { FormHelperText } from "@mui/material";
-import { Controller } from "react-hook-form";
+import {
+	Controller,
+	type Control,
+	type FieldPath,
+	type FieldValues,
+} from "react-hook-form";
 
-interface Props {
+interface Props<TFieldValues extends FieldValues> {
 	label: string;
 	name: string;
-	control: any;
+	control: Control<TFieldValues>;
 	style?: import("@mui/system").SxProps<import("@mui/material").Theme>;
 }
 
-export default function MyPassField(props: Props) {
+export default function MyPassField<TFieldValues extends FieldValues>(
+	props: Props<TFieldValues>,
+) {
 	const [showPassword, setShowPassword] = React.useState(false);
 
 	const handleClickShowPassword = () => setShowPassword((show) => !show);
 
-	const handleMouseDownPassword = (event: any) => {
+	const handleMouseDownPassword = (event: React.MouseEvent<HTMLButtonElement>) => {
 		event.preventDefault();
 	};
 
 	return (
 		<Controller
-			name={props.name}
+			name={props.name as FieldPath<TFieldValues>}
 			control={props.control}
 			render={({ field: { onChange, value }, fieldState: { error } }) => (
 				<FormControl

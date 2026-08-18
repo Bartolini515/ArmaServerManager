@@ -23,5 +23,8 @@ django-redis = "*"
 
 [dev-packages]
 
+[scripts]
+check = "python scripts/check.py"
+
 [requires]
 python_version = "3.12"

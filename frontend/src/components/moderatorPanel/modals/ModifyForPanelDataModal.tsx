@@ -11,6 +11,16 @@ import MyButton from "../../../UI/forms/MyButton";
 import { useAlert } from "../../../contexts/AlertContext";
 import { useEffect, useState } from "react";
 import MyPassField from "../../../UI/forms/MyPassField";
+import type {
+	UserModeratorFormData,
+	UserModeratorOption,
+} from "../types";
+import {
+	getApiErrorData,
+	getApiErrorMessage,
+	getApiErrorStatus,
+	getFieldErrorMessage,
+} from "../../../util/api-error";
 
 const style = {
 	position: "absolute",
@@ -29,27 +39,12 @@ const style = {
 };
 
 interface Props {
-	option: {
-		name: string;
-		label: string;
-		labelSingle: string;
-		headers: string[];
-		buttonAdd: string;
-		forms: {
-			first_field: {
-				title: string;
-				label: string;
-				name: string;
-				helperText?: string;
-			};
-		};
-		payload: (data: any) => any;
-	};
+	option: UserModeratorOption;
 	open: boolean;
-	setOpen: any;
-	setRefresh: any;
+	setOpen: (value: boolean) => void;
+	setRefresh: (value: boolean) => void;
 	id: number;
-	setClickedId: any;
+	setClickedId: (value: number) => void;
 }
 
 interface ResponseData {
@@ -57,10 +52,7 @@ interface ResponseData {
 	username?: string;
 }
 
-interface FormData {
-	username?: string;
-	password?: string;
-}
+type FormData = UserModeratorFormData;
 
 export default function ModifyDataModerator(props: Props) {
 	const [responseData, setResponseData] = useState<ResponseData>({
@@ -81,14 +73,9 @@ export default function ModifyDataModerator(props: Props) {
 				setResponseData(response.data);
 				setLoading(false);
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 	useEffect(() => {
@@ -125,28 +112,19 @@ export default function ModifyDataModerator(props: Props) {
 				handleClose();
 				setAlert(response.data.message, "success");
 			})
-			.catch((error: any) => {
-				if (
-					error.response &&
-					error.response.data &&
-					error.response.status === 400
-				) {
+			.catch((error: unknown) => {
+				const serverErrors = getApiErrorData(error);
+				if (getApiErrorStatus(error) === 400 && serverErrors) {
 					console.log(error);
-					const serverErrors = error.response.data;
 					Object.keys(serverErrors).forEach((field) => {
 						setError(field as keyof FormData, {
 							type: "server",
-							message: serverErrors[field][0],
+							message: getFieldErrorMessage(serverErrors, field),
 						});
 					});
 				} else {
 					console.log(error);
-					setAlert(
-						error.response.data.message
-							? error.response.data.message
-							: error.message,
-						"error"
-					);
+					setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 				}
 			});
 	};

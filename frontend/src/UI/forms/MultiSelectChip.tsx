@@ -29,7 +29,7 @@ function getStyles(name: string, optionName: readonly string[], theme: Theme) {
 interface Props {
 	label: string;
 	options: string[];
-	setSelectedValue: any;
+	setSelectedValue: (value: string[]) => void;
 	selectedValue: string[];
 }
 

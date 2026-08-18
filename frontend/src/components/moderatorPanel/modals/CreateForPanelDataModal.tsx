@@ -10,6 +10,16 @@ import { useForm } from "react-hook-form";
 import MyButton from "../../../UI/forms/MyButton";
 import { useAlert } from "../../../contexts/AlertContext";
 import MyPassField from "../../../UI/forms/MyPassField";
+import type {
+	UserModeratorFormData,
+	UserModeratorOption,
+} from "../types";
+import {
+	getApiErrorData,
+	getApiErrorMessage,
+	getApiErrorStatus,
+	getFieldErrorMessage,
+} from "../../../util/api-error";
 
 const style = {
 	position: "absolute",
@@ -28,31 +38,13 @@ const style = {
 };
 
 interface Props {
-	option: {
-		name: string;
-		label: string;
-		labelSingle: string;
-		headers: string[];
-		buttonAdd: string;
-		forms: {
-			first_field: {
-				title: string;
-				label: string;
-				name: string;
-				helperText?: string;
-			};
-		};
-		payload: (data: any) => any;
-	};
+	option: UserModeratorOption;
 	open: boolean;
-	setOpen: any;
-	setRefresh: any;
+	setOpen: (value: boolean) => void;
+	setRefresh: (value: boolean) => void;
 }
 
-interface FormData {
-	username?: string;
-	password?: string;
-}
+type FormData = UserModeratorFormData;
 
 export default function CreateDataModerator(props: Props) {
 	const { handleSubmit, control, setError, clearErrors } = useForm<FormData>({
@@ -78,27 +70,18 @@ export default function CreateDataModerator(props: Props) {
 				handleClose();
 				setAlert(response.data.message, "success");
 			})
-			.catch((error: any) => {
-				if (
-					error.response &&
-					error.response.data &&
-					error.response.status === 400
-				) {
-					const serverErrors = error.response.data;
+			.catch((error: unknown) => {
+				const serverErrors = getApiErrorData(error);
+				if (getApiErrorStatus(error) === 400 && serverErrors) {
 					Object.keys(serverErrors).forEach((field) => {
 						setError(field as keyof FormData, {
 							type: "server",
-							message: serverErrors[field][0],
+							message: getFieldErrorMessage(serverErrors, field),
 						});
 					});
 				} else {
 					console.log(error);
-					setAlert(
-						error.response.data.message
-							? error.response.data.message
-							: error.message,
-						"error"
-					);
+					setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 				}
 			});
 	};

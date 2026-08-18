@@ -3,34 +3,34 @@ import ModeratorPanelDataManagementTable from "./tables/ModeratorPanelDataManage
 import SingleSelectAutoWidth from "../../UI/forms/SingleSelectAutoWidth";
 import { useState } from "react";
 import CreateForPanelDataModal from "./modals/CreateForPanelDataModal";
+import type { UserModeratorOption } from "./types";
+
+const optionsMap: Record<"user", UserModeratorOption> = {
+	user: {
+		name: "user",
+		label: "Użytkownicy",
+		labelSingle: "Użytkownika",
+		headers: ["ID", "Nazwa użytkownika", "Ostatnie logowanie"],
+		buttonAdd: "Dodaj użytkownika",
+		forms: {
+			first_field: {
+				title: "Nazwa użytkownika",
+				label: "Nazwa użytkownika",
+				name: "username",
+			},
+		},
+		payload: (data) => ({
+			username: data.username,
+			password: data.password,
+		}),
+	},
+};
 
 export default function ModeratorPanelDataManagement() {
 	const [selectedOption, setSelectedOption] =
 		useState<keyof typeof optionsMap>("user");
 	const [open, setOpen] = useState(false);
 	const [refresh, setRefresh] = useState(false);
-
-	const optionsMap = {
-		user: {
-			name: "user",
-			label: "Użytkownicy",
-			labelSingle: "Użytkownika",
-			headers: ["ID", "Nazwa użytkownika", "Ostatnie logowanie"],
-			buttonAdd: "Dodaj użytkownika",
-			forms: {
-				first_field: {
-					title: "Nazwa użytkownika",
-					label: "Nazwa użytkownika",
-					name: "username",
-				},
-			},
-			payload: (data: any) => ({
-				username: data.username,
-				password: data.password,
-			}),
-		},
-	};
-
 	const handleClick = () => {
 		setOpen(true);
 	};
@@ -50,7 +50,9 @@ export default function ModeratorPanelDataManagement() {
 						option: key,
 						label: optionsMap[key as keyof typeof optionsMap].label,
 					}))}
-					setSelectedOption={setSelectedOption}
+					setSelectedOption={(value) =>
+						setSelectedOption(value as keyof typeof optionsMap)
+					}
 					selectedOption={selectedOption}
 				/>
 			</Box>

@@ -8,6 +8,12 @@ import CloseIcon from "@mui/icons-material/Close";
 import { useForm } from "react-hook-form";
 import { useAlert } from "../../../contexts/AlertContext";
 import MyDropzone from "../../../UI/forms/MyDropzone";
+import {
+	getApiErrorData,
+	getApiErrorMessage,
+	getApiErrorStatus,
+	getFieldErrorMessage,
+} from "../../../util/api-error";
 
 const style = {
 	position: "absolute",
@@ -59,27 +65,18 @@ export default function ChangePresetModal(props: Props) {
 				props.onClose();
 				setAlert(response.data.message, "success");
 			})
-			.catch((error: any) => {
-				if (
-					error.response &&
-					error.response.data &&
-					error.response.status === 400
-				) {
-					const serverErrors = error.response.data;
+			.catch((error: unknown) => {
+				const serverErrors = getApiErrorData(error);
+				if (getApiErrorStatus(error) === 400 && serverErrors) {
 					Object.keys(serverErrors).forEach((field) => {
 						setError(field as keyof FormData, {
 							type: "server",
-							message: serverErrors[field][0],
+							message: getFieldErrorMessage(serverErrors, field),
 						});
 					});
 				} else {
 					console.log(error);
-					setAlert(
-						error.response.data.message
-							? error.response.data.message
-							: error.message,
-						"error"
-					);
+					setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 				}
 			});
 	};
