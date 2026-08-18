@@ -70,6 +70,12 @@ The complete lifecycle and its failure boundaries are documented in [instance li
 
 These operations require an approved host and should not be exercised by repository-only checks. See [known risks](known-risks.md) and [troubleshooting](troubleshooting.md).
 
+## Application operation logging
+
+Application-side operation logs use Python's standard `logging` module through the small `operation_loggers` context in `backend/main/utils/operation_logging.py`. The context creates ordinary `LoggerAdapter` instances with per-operation `FileHandler`s, writes records immediately as UTF-8, and closes every handler on success, early return, or exception. It does not affect the `Instances.log_file` stream used for Arma process output and the `/logs/` API.
+
+Create, start, and administrative preset replacement keep one timestamped operation file each. A Celery mod download uses one user-scoped timestamped directory containing `log_operations.txt` and `log_download.txt`; records at `ERROR` or above are also sent to a lazily-created `errors.txt` in that directory. The non-grouped operations use the analogous `errors_<timestamp>.txt` file. There is no automatic retention or rotation, and existing files from the removed custom logger are left untouched.
+
 ## Frontend composition
 
 `App.tsx` mounts public login/password routes and protected dashboard, account, settings, instances, missions, and moderator routes. Context providers carry authentication, theme, and alert state. Instance screens keep task IDs in local storage so a browser refresh can continue polling visible work; the server remains the source of truth for model state.

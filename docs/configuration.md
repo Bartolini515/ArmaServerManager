@@ -55,4 +55,6 @@ The `Config` class creates a blank file when it does not exist. The expected top
 
 Dot-separated lookups include `paths.arma3`, `paths.mods_directory`, `paths.logs_directory`, `paths.download_directory`, `paths.steamcmd`, and the three `steam_auth` values. `Config.update` performs a recursive merge and writes the whole file. `ConfigSerializer` validates the shared secret as base64 when supplied and masks `password` and `shared_secret` in responses.
 
+`paths.logs_directory` is used by the application operation logging context. It creates UTF-8 files for each create/start/preset-change operation and user-scoped files for Celery mod downloads. The standard-library logger writes immediately, uses the operation/user context in each record, creates error files only when an `ERROR` record occurs, and does not delete or rotate old files. This setting does not control an instance's `log_file`, which remains media-backed Arma process output.
+
 This file is runtime state and may contain credentials and host paths. It is ignored by Git and must be supplied only through an approved environment.

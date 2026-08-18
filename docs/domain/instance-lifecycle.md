@@ -10,7 +10,7 @@ An instance represents one Arma 3 server definition and its host-side files. The
 4. The instance is saved and the port is marked unavailable in one database transaction.
 5. The preset parser extracts Workshop IDs.
 6. A per-user server configuration is generated when needed, followed by an instance start script.
-7. The generated path is stored on the instance and the creation log is written.
+7. The generated path is stored on the instance and the creation operation log is written immediately through the standard-library logging context.
 
 Non-staff users may create at most five instances. The instance is not ready until its required mods have been downloaded.
 
@@ -24,7 +24,7 @@ Non-staff users may create at most five instances. The instance is not ready unt
 - reports `PROGRESS` status to the frontend;
 - normalizes addon directory casing, moves content from a temporary ghost folder, and cleans it;
 - marks `is_ready=True` only after success;
-- writes operation/download logs and clears its cache key on completion or failure.
+- writes separate operation/download logs through one user-scoped logging context, records handled failures with a traceback, and clears its cache key on completion or failure.
 
 The task requires configured Steam credentials and host paths. It must not run in repository-only checks.
 
@@ -46,7 +46,7 @@ Running instances cannot be deleted. Deleting a stopped instance removes its pre
 
 ## Administrative instances
 
-Staff can see shared `is_admin_instance` rows, start/stop them, and replace a stopped administrative preset. Administrative operations use the superuser's identity for generated files/logging. Administrative instances do not receive the one-hour user timeout.
+Staff can see shared `is_admin_instance` rows, start/stop them, and replace a stopped administrative preset. Administrative operations use the superuser's identity for generated files/logging. Administrative instances do not receive the one-hour user timeout. Application operation logs are separate from the instance `log_file` streamed from the Arma process.
 
 ## Failure boundaries
 

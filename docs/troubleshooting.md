@@ -37,6 +37,8 @@ The stop task relies on the recorded PID and UDP connections for the instance po
 
 Logs are created lazily on first start and stored through the instance `log_file` field. A missing file, deleted instance, unavailable media path, or failed process startup can produce a `404`. The model deletion path removes logs when an instance is deleted.
 
+Application operation logs are a separate filesystem concern. Check the configured `paths.logs_directory` in an approved non-production environment and distinguish timestamped create/start/preset files from the user-scoped `operations`/`download` directory created by Celery. Existing files are not migrated automatically, and the standard logger creates an error file only after an error record is emitted.
+
 ## Mission replacement is unexpected
 
 Uploading a `.pbo` with the same stored filename deletes the existing mission before creating the new record. There is no version history or uploader relation in the current schema.

@@ -15,7 +15,7 @@ This document maps responsibilities without attempting to list every file. The c
 | Host integration | SteamCMD login/guard handling and subprocess download | `backend/main/steamcmd/` |
 | Server integration | Start script execution and output streaming | `backend/main/serverhandling/` |
 | Configuration | JSON bootstrap, dot-path lookup, deep updates | `backend/main/utils/config.py` |
-| Logging | Per-operation files and combined log output | `backend/main/utils/logger.py` |
+| Logging | Standard-library per-operation files, grouped Celery logs, and error records | `backend/main/utils/operation_logging.py`, `backend/main/tasks.py`, `backend/main/views.py` |
 | Workarounds | Ghost folders, SteamCMD cache deletion, addon name normalization | `backend/main/workaround/` |
 | Administration | Django admin registration and port population command | `backend/main/admin.py`, `backend/main/management/` |
 | Schema history | Applied database migrations | `backend/main/migrations/` |

@@ -14,6 +14,8 @@ Celery tasks invoke `bash`, SteamCMD, generated shell scripts, `subprocess.Popen
 
 `backend/data/config.json` can contain Steam username, password, and shared secret values. Django environment variables contain signing/database credentials. Responses mask two Steam fields, but local files, logs, and process arguments remain sensitive. Never copy runtime configuration into fixtures or Markdown.
 
+Application operation logs may contain host paths, Workshop IDs, usernames, and subprocess output. They are written immediately to the configured logs directory and have no automatic retention or rotation; operators must protect and clean that directory through an approved procedure. The separate instance `log_file` remains subject to the media-storage and authorization boundaries described elsewhere.
+
 ## External service dependency
 
 Normal instance operation requires MySQL, Redis, Celery workers, SteamCMD, an Arma 3 installation, writable media paths, and available host ports. The repository has no standardized Docker/runtime contract yet.
