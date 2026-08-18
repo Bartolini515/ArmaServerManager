@@ -9,5 +9,6 @@
 		"steamcmd",
 		"steamguard",
 		"wids"
-	]
+	],
+	"python-envs.defaultEnvManager": "ms-python.python:pipenv"
 }
