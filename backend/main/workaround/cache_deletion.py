@@ -1,8 +1,9 @@
 import os
 import shutil
+from ..utils.operation_logging import LogCallback
 
 
-def delete_steamcmd_appcache(source_dir: str, log_callback: callable = None) -> None:
+def delete_steamcmd_appcache(source_dir: str, log_callback: LogCallback | None = None) -> None:
     """Delete the SteamCMD appcache directory.
 
     Args:

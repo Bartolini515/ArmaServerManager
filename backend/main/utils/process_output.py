@@ -1,7 +1,8 @@
 import threading
+from .operation_logging import LogCallback
 
 
-def reader_thread(pipe, log_callback: callable = None) -> None:
+def reader_thread(pipe, log_callback: LogCallback | None = None) -> None:
     try:
         while True:
             line = pipe.readline()
@@ -23,7 +24,7 @@ def reader_thread(pipe, log_callback: callable = None) -> None:
         pipe.close()
 
 
-def stream_process_output(process, log_callback: callable = None) -> None:
+def stream_process_output(process, log_callback: LogCallback | None = None) -> None:
     stdout_thread = threading.Thread(target=reader_thread, args=(process.stdout, log_callback))
     stderr_thread = threading.Thread(target=reader_thread, args=(process.stderr, log_callback))
 

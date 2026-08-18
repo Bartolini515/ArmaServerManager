@@ -1,8 +1,9 @@
 import os
 from ..utils.config import config
+from ..utils.operation_logging import LogCallback
 
 
-def generate_server_config(username: str, password: str, arma_path: str, log_callback: callable = None) -> str:
+def generate_server_config(username: str, password: str, arma_path: str, log_callback: LogCallback | None = None) -> str:
     """Generates a server configuration file for the given username and password.
     Args:
         username (str): The username of the user.
@@ -86,7 +87,7 @@ def generate_server_config(username: str, password: str, arma_path: str, log_cal
         log_callback(f"Generated server config for {username} at {config_path}")
     return config_path
 
-def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_directory: str, arma_directory: str, log_callback: callable = None, is_admin_instance: bool = False) -> str:
+def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_directory: str, arma_directory: str, log_callback: LogCallback | None = None, is_admin_instance: bool = False) -> str:
     """Generates a shell script to start the Arma 3 server.
     Args:
         name (str): The name of the server.
@@ -120,7 +121,7 @@ def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_
         log_callback(f"Generated script: {script_name} for {name} on port {port}")
     return script_name
 
-def check_sh_file_exists(name: str, log_callback: callable = None) -> bool:
+def check_sh_file_exists(name: str, log_callback: LogCallback | None = None) -> bool:
     """Checks if the shell script for the given instance name exists.
     Args:
         name (str): The name of the instance.

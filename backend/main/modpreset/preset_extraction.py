@@ -1,7 +1,8 @@
 import re
+from ..utils.operation_logging import LogCallback
 
 
-def extract_links(file_path: str, log_callback: callable = None) -> list[str]:
+def extract_links(file_path: str, log_callback: LogCallback | None = None) -> list[str]:
     """Extract links from an HTML file.
 
     Args:
@@ -17,7 +18,7 @@ def extract_links(file_path: str, log_callback: callable = None) -> list[str]:
         log_callback(f'Extracted links from html file: {links}')
     return links
 
-def extract_workshop_ids(links: list[str], log_callback: callable = None) -> list[str]:
+def extract_workshop_ids(links: list[str], log_callback: LogCallback | None = None) -> list[str]:
     """Extract workshop IDs from a list of links.
 
     Args:
@@ -36,7 +37,7 @@ def extract_workshop_ids(links: list[str], log_callback: callable = None) -> lis
         log_callback(f'Extracted workshop ids from links: {workshop_ids}')
     return workshop_ids
 
-def preset_parser(file_path: str, log_callback: callable = None) -> list[str]:
+def preset_parser(file_path: str, log_callback: LogCallback | None = None) -> list[str]:
     """Parse a preset HTML file and extract workshop IDs.
 
     Args:

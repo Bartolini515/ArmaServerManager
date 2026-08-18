@@ -3,8 +3,7 @@ import hmac
 import hashlib
 import base64
 from struct import pack, unpack
-from ..utils.config import config
-from ..utils.logger import Logger
+from ..utils.operation_logging import LogCallback
 
 def load_credentials() -> tuple[str, str]:
     """Loads Steam authentication credentials.
@@ -12,15 +11,22 @@ def load_credentials() -> tuple[str, str]:
     Returns:
         tuple[str, str]: A tuple containing the username and password.
     """
+    from ..utils.config import config
+
     username = config.get("steam_auth.username")
     password = config.get("steam_auth.password")
     return username, password
 
-def generate_steam_guard_code(shared_secret: str) -> str:
+def generate_steam_guard_code(
+    shared_secret: str,
+    error_callback: LogCallback | None = None,
+) -> str:
     """Generates a 5-character Steam Guard code.
 
     Args:
         shared_secret (str): The shared secret used to generate the code.
+        error_callback (LogCallback, optional): Callback used to report
+            generation errors. Defaults to None.
 
     Returns:
         str: A 5-character Steam Guard code.
@@ -56,5 +62,6 @@ def generate_steam_guard_code(shared_secret: str) -> str:
 
         return code
     except Exception as e:
-        Logger.error(f"Failed to generate Steam Guard code: {e}")
+        if error_callback:
+            error_callback(f"Failed to generate Steam Guard code: {e}")
         return ""

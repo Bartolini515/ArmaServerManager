@@ -2,16 +2,22 @@ import math
 import os
 import subprocess
 from time import sleep, time
+from typing import Callable
 from ..utils.process_output import stream_process_output
-from ..utils.logger import Logger
 from ..utils.config import config
+from ..utils.operation_logging import LogCallback
 from ..workaround.cache_deletion import delete_steamcmd_appcache
 from ..workaround.ghost_folder import GhostFolder
 from ..workaround.modsrenamer import lowercase_addons_directory
 from .steam_auth import load_credentials, generate_steam_guard_code
 
 
-def assign_new_steamguard(steamguard, buffer_seconds: int = 7, log_callback: callable = None) -> str:
+def assign_new_steamguard(
+    steamguard: str | None,
+    buffer_seconds: int = 7,
+    log_callback: LogCallback | None = None,
+    error_callback: LogCallback | None = None,
+) -> str:
     def _get_time_until_next_steamguard_change() -> float:
         """Get the time in seconds until the next Steam Guard code change.
 
@@ -25,7 +31,10 @@ def assign_new_steamguard(steamguard, buffer_seconds: int = 7, log_callback: cal
         Returns:
             str: The new Steam Guard code.
         """
-        return generate_steam_guard_code(config.get("steam_auth.shared_secret", ""))
+        return generate_steam_guard_code(
+            config.get("steam_auth.shared_secret", ""),
+            error_callback=error_callback,
+        )
 
     # Generate a new Steam Guard code, ensuring it's different from the previous one
     for _ in range(10):  # Retry up to 10 times
@@ -38,15 +47,26 @@ def assign_new_steamguard(steamguard, buffer_seconds: int = 7, log_callback: cal
         sleep(time_until_change)
     return ""
 
-def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: int = 10, progress_callback: callable = None) -> list[str] | None:
+def download_mods(
+    mods_to_download: list[str],
+    name: str,
+    log_callback: LogCallback | None = None,
+    error_callback: LogCallback | None = None,
+    lim: int = 10,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> list[str] | None:
     """Downloads mods using SteamCMD.
 
     Args:
         mods_to_download (list[str]): The list of workshop IDs for the mods to download.
         name (str): The name of the mod set being downloaded.
-        logger (Logger): Logger instance for logging download progress.
+        log_callback (LogCallback, optional): Callback for informational
+            download messages. Defaults to None.
+        error_callback (LogCallback, optional): Callback for download errors.
+            Defaults to None.
         lim (int): The maximum number of downloads in one batch.
-        progress_callback (callable, optional): Callback function to report download progress.
+        progress_callback (Callable[[int, int], None], optional): Callback
+            function to report download progress.
 
     Returns:
         list[str]: A list containing mods that failed to download, if any.
@@ -61,13 +81,17 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: i
     
     
     login, password = load_credentials()
-    steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
-    if logger:
-        logger.log('Loaded login credentials.')
+    steamguard = assign_new_steamguard(
+        steamguard=steamguard,
+        log_callback=log_callback,
+        error_callback=error_callback,
+    )
+    if log_callback:
+        log_callback('Loaded login credentials.')
     
-    delete_steamcmd_appcache(steamcmd_dir, logger.log if logger else None)
+    delete_steamcmd_appcache(steamcmd_dir, log_callback)
 
-    ghost_folder = GhostFolder(name=name, path=download_dir, log_callback=logger.log if logger else None)
+    ghost_folder = GhostFolder(name=name, path=download_dir, log_callback=log_callback)
     
     if not test_connection(steamcmd_dir, login, password, steamguard):
         raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
@@ -79,7 +103,11 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: i
         batch = mods_to_download[i * lim:min((i + 1) * lim, len(mods_to_download))]
 
 
-        steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
+        steamguard = assign_new_steamguard(
+            steamguard=steamguard,
+            log_callback=log_callback,
+            error_callback=error_callback,
+        )
 
         return_code = steamcmd_download(
             mod=batch,
@@ -89,7 +117,7 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: i
             steamcmd_dir=steamcmd_dir,
             ghost_folder_path=ghost_folder.ghost_folder_path,
             steamguard=steamguard,
-            log_callback=logger.log if logger else None
+            log_callback=log_callback,
         )
 
         if return_code == 84:
@@ -98,29 +126,61 @@ def download_mods(mods_to_download: list[str], name: str, logger: Logger, lim: i
             time.sleep(600)  # Wait for 10 minutes to avoid rate limiting
             continue
         elif return_code != 0:
-            steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=logger.log if logger else None)
+            steamguard = assign_new_steamguard(
+                steamguard=steamguard,
+                log_callback=log_callback,
+                error_callback=error_callback,
+            )
             for mod in batch:
-                if download_fallback(mod, appid, login, password, steamcmd_dir, ghost_folder.ghost_folder_path, steamguard, log_callback=logger.log if logger else None):
+                if download_fallback(
+                    mod,
+                    appid,
+                    login,
+                    password,
+                    steamcmd_dir,
+                    ghost_folder.ghost_folder_path,
+                    steamguard,
+                    log_callback=log_callback,
+                    error_callback=error_callback,
+                ):
                     failed_mods.append(mod)
-                    if logger:
-                        logger.log(f"Failed to download mod {mod}.")
+                    if error_callback:
+                        error_callback(f"Failed to download mod {mod}.")
+                    elif log_callback:
+                        log_callback(f"Failed to download mod {mod}.")
         if progress_callback:
             progress_callback(min((i + 1) * lim, len(mods_to_download)), len(mods_to_download))
 
     for wid in mods_to_download:
-        lowercase_addons_directory(wid, os.path.join(ghost_folder.ghost_folder_path, "steamapps/workshop/content/107410"), log_callback=logger.log if logger else None)
+        lowercase_addons_directory(
+            wid,
+            os.path.join(ghost_folder.ghost_folder_path, "steamapps/workshop/content/107410"),
+            log_callback=log_callback,
+        )
     ghost_folder.move_files(destination_path=mods_dir, internal_path="steamapps/workshop/content/107410")
     ghost_folder.cleanup()
     
     if failed_mods:
-        if logger:
-            logger.log(f"Errors occurred during mod downloads: {failed_mods}")
+        if error_callback:
+            error_callback(f"Errors occurred during mod downloads: {failed_mods}")
+        elif log_callback:
+            log_callback(f"Errors occurred during mod downloads: {failed_mods}")
         return failed_mods
-    if logger:
-        logger.log("All mods downloaded successfully.")
+    if log_callback:
+        log_callback("All mods downloaded successfully.")
     return None
 
-def steamcmd_download(mod: str | list[str], appid: int, login: str, password: str, steamcmd_dir: str, ghost_folder_path: str, steamguard: str = None, log_callback: callable = None, is_retry: bool = False) -> int:
+def steamcmd_download(
+    mod: str | list[str],
+    appid: int,
+    login: str,
+    password: str,
+    steamcmd_dir: str,
+    ghost_folder_path: str,
+    steamguard: str | None = None,
+    log_callback: LogCallback | None = None,
+    is_retry: bool = False,
+) -> int:
     """Download a mod using SteamCMD.
 
     Args:
@@ -131,7 +191,8 @@ def steamcmd_download(mod: str | list[str], appid: int, login: str, password: st
         steamcmd_dir (str): The directory where SteamCMD is located.
         ghost_folder_path (str): The path to the ghost folder.
         steamguard (str, optional): The Steam Guard code. Defaults to None.
-        log_callback (callable, optional): A callback function for logging. Defaults to None.
+        log_callback (LogCallback, optional): A callback function for logging.
+            Defaults to None.
         is_retry (bool, optional): Whether this is a retry of a failed download. Defaults to False.
 
     Returns:
@@ -159,7 +220,17 @@ def steamcmd_download(mod: str | list[str], appid: int, login: str, password: st
     
     return process.returncode
 
-def download_fallback(mod: str, appid: int, login: str, password: str, steamcmd_dir: str, ghost_folder_path: str, steamguard: str = None, log_callback: callable = None) -> str | None:
+def download_fallback(
+    mod: str,
+    appid: int,
+    login: str,
+    password: str,
+    steamcmd_dir: str,
+    ghost_folder_path: str,
+    steamguard: str | None = None,
+    log_callback: LogCallback | None = None,
+    error_callback: LogCallback | None = None,
+) -> str | None:
     """Attempt to download failed mod again.
 
         Args:
@@ -170,7 +241,8 @@ def download_fallback(mod: str, appid: int, login: str, password: str, steamcmd_
             steamcmd_dir (str): The directory where SteamCMD is located.
             ghost_folder_path (str): The path to the ghost folder.
             steamguard (str, optional): The Steam Guard code. Defaults to None.
-            log_callback (callable, optional): A callback function for logging. Defaults to None.
+            log_callback (LogCallback, optional): A callback function for logging.
+                Defaults to None.
 
         Returns:
             str | None: The workshop ID of the mod if the download fails again, otherwise None.
@@ -180,7 +252,11 @@ def download_fallback(mod: str, appid: int, login: str, password: str, steamcmd_
         if log_callback:
             log_callback(f"Retrying download for mod {mod}...")
         sleep(60)
-        steamguard = assign_new_steamguard(steamguard=steamguard, log_callback=log_callback)
+        steamguard = assign_new_steamguard(
+            steamguard=steamguard,
+            log_callback=log_callback,
+            error_callback=error_callback,
+        )
         return_code = steamcmd_download(mod=mod, appid=appid, login=login, password=password, steamcmd_dir=steamcmd_dir, ghost_folder_path=ghost_folder_path, steamguard=steamguard, log_callback=log_callback, is_retry=True)
         if return_code == 0:
             if log_callback:

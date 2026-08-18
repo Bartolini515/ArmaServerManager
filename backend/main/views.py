@@ -15,7 +15,7 @@ from .modpreset.modpathing import check_installed
 from .modpreset.preset_extraction import preset_parser
 from .modpreset.start_files import generate_sh_file, check_sh_file_exists, generate_server_config
 from .utils.config import config
-from .utils.logger import Logger
+from .utils.operation_logging import operation_loggers
 from celery.result import AsyncResult
 from .tasks import *
 from django.core.cache import cache
@@ -214,16 +214,33 @@ class InstancesViewset(viewsets.ModelViewSet):
                 available_port.is_available = False
                 available_port.save()
             
-            create_logger = Logger(name="create", user=user.username)
-            mod_paths = preset_parser(instance.preset.path, log_callback=create_logger.log)
-            if not user.server_config:
-                server_config_file_path = generate_server_config(user.username, "test", config.get("paths.arma3"), log_callback=create_logger.log)
-                user.server_config = server_config_file_path
-                user.save()
-            start_file_path = generate_sh_file(instance.name, instance.port.port_number, user.username, mod_paths, config.get("paths.mods_directory"), config.get("paths.arma3"), log_callback=create_logger.log)
-            instance.start_file_path = start_file_path
-            instance.save()
-            create_logger.write_log_to_file()
+            with operation_loggers(
+                config.get("paths.logs_directory", "/logs"),
+                user.username,
+                ("create",),
+            ) as loggers:
+                create_logger = loggers["create"]
+                mod_paths = preset_parser(instance.preset.path, log_callback=create_logger.info)
+                if not user.server_config:
+                    server_config_file_path = generate_server_config(
+                        user.username,
+                        "test",
+                        config.get("paths.arma3"),
+                        log_callback=create_logger.info,
+                    )
+                    user.server_config = server_config_file_path
+                    user.save()
+                start_file_path = generate_sh_file(
+                    instance.name,
+                    instance.port.port_number,
+                    user.username,
+                    mod_paths,
+                    config.get("paths.mods_directory"),
+                    config.get("paths.arma3"),
+                    log_callback=create_logger.info,
+                )
+                instance.start_file_path = start_file_path
+                instance.save()
 
             return message_response(self.serializer_class(instance).data, "Instancja została utworzona")
         else:
@@ -267,45 +284,46 @@ class InstancesViewset(viewsets.ModelViewSet):
         if self.queryset.filter(is_admin_instance=False, is_running=True).count() >= 5 and not user.is_staff:
             return Response({"message": "Przekroczono generalny limit 5 uruchomionych instancji. Spróbuj ponownie później."}, status=403)
         
-        start_logger = Logger(name="start", user=user.username)
+        with operation_loggers(
+            config.get("paths.logs_directory", "/logs"),
+            user.username,
+            ("start",),
+        ) as loggers:
+            start_logger = loggers["start"]
 
-        if not instance.log_file:
-            log_filename = f"log_file.txt"
-            log_content = f"Log file for instance '{instance.name}' created at {timezone.now()}.\n"
-            content_file = ContentFile(log_content.encode('utf-8'), name=log_filename)
-            instance.log_file.save(log_filename, content_file, save=True)
+            if not instance.log_file:
+                log_filename = f"log_file.txt"
+                log_content = f"Log file for instance '{instance.name}' created at {timezone.now()}.\n"
+                content_file = ContentFile(log_content.encode('utf-8'), name=log_filename)
+                instance.log_file.save(log_filename, content_file, save=True)
 
-        workshop_ids = preset_parser(instance.preset.path, log_callback=start_logger.log)
-        mods_dir = config.get("paths.mods_directory")
-        if check_installed(wids=workshop_ids, mods_dir=mods_dir, log_callback=start_logger.log)[1]:
-            start_logger.write_log_to_file()
-            instance.is_ready = False
-            instance.save()
-            return Response({"message": "Niektóre mody są niezainstalowane. Proszę je najpierw pobrać."}, status=400)
-        if not check_sh_file_exists(instance.name, log_callback=start_logger.log):
-            start_logger.write_log_to_file()
-            return Response({"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"}, status=400)
+            workshop_ids = preset_parser(instance.preset.path, log_callback=start_logger.info)
+            mods_dir = config.get("paths.mods_directory")
+            if check_installed(wids=workshop_ids, mods_dir=mods_dir, log_callback=start_logger.info)[1]:
+                instance.is_ready = False
+                instance.save()
+                return Response({"message": "Niektóre mody są niezainstalowane. Proszę je najpierw pobrać."}, status=400)
+            if not check_sh_file_exists(instance.name, log_callback=start_logger.info):
+                return Response({"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"}, status=400)
 
-        try:
-            task = start_server_task.delay(
-                instance_id=instance.id,
-                arma3_dir=config.get("paths.arma3"),
-            )
-        except Exception as e:
-            start_logger.log(f"Nie udało się rozpocząć zadania uruchamiania: {str(e)}")
-            start_logger.write_log_to_file()
-            return Response({"message": f"Nie udało się rozpocząć zadania uruchamiania: {str(e)}"}, status=500)
-        
-        if not instance.is_admin_instance:
-            cache_key = f"terminate_task_{instance.id}"
-            old_terminate_task = cache.get(cache_key)
-            if old_terminate_task:
-                celery_app.control.revoke(old_terminate_task, terminate=True)
-            async_result = instance_timeout_task.apply_async(args=[instance.id], countdown=3600)
-            cache.set(cache_key, async_result.id, timeout=3660) # longer than task timeout
-        
-        start_logger.write_log_to_file()
-        return Response({"task_id": task.id}, status=202)
+            try:
+                task = start_server_task.delay(
+                    instance_id=instance.id,
+                    arma3_dir=config.get("paths.arma3"),
+                )
+            except Exception as e:
+                start_logger.exception("Nie udało się rozpocząć zadania uruchamiania.")
+                return Response({"message": f"Nie udało się rozpocząć zadania uruchamiania: {str(e)}"}, status=500)
+
+            if not instance.is_admin_instance:
+                cache_key = f"terminate_task_{instance.id}"
+                old_terminate_task = cache.get(cache_key)
+                if old_terminate_task:
+                    celery_app.control.revoke(old_terminate_task, terminate=True)
+                async_result = instance_timeout_task.apply_async(args=[instance.id], countdown=3600)
+                cache.set(cache_key, async_result.id, timeout=3660) # longer than task timeout
+
+            return Response({"task_id": task.id}, status=202)
 
     @action(detail=True, methods=["post"], url_path="stop")
     def stop(self, request, pk=None):
@@ -355,17 +373,30 @@ class InstancesViewset(viewsets.ModelViewSet):
         else:
             return Response(serializer.errors, status=400)
         
-        change_preset_logger = Logger(name="change_preset", user=user.username)
-        mod_paths = preset_parser(instance.preset.path, log_callback=change_preset_logger.log)
-        
-        if instance.start_file_path and os.path.exists(instance.start_file_path):
-            os.remove(instance.start_file_path)
-        start_file_path = generate_sh_file(instance.name, instance.port.port_number, user.username, mod_paths, config.get("paths.mods_directory"), config.get("paths.arma3"), log_callback=change_preset_logger.log, is_admin_instance=True)
-        instance.start_file_path = start_file_path
-        instance.is_ready = False
-        instance.save()
-        
-        change_preset_logger.write_log_to_file()
+        with operation_loggers(
+            config.get("paths.logs_directory", "/logs"),
+            user.username,
+            ("change_preset",),
+        ) as loggers:
+            change_preset_logger = loggers["change_preset"]
+            mod_paths = preset_parser(instance.preset.path, log_callback=change_preset_logger.info)
+
+            if instance.start_file_path and os.path.exists(instance.start_file_path):
+                os.remove(instance.start_file_path)
+            start_file_path = generate_sh_file(
+                instance.name,
+                instance.port.port_number,
+                user.username,
+                mod_paths,
+                config.get("paths.mods_directory"),
+                config.get("paths.arma3"),
+                log_callback=change_preset_logger.info,
+                is_admin_instance=True,
+            )
+            instance.start_file_path = start_file_path
+            instance.is_ready = False
+            instance.save()
+
         return message_response(self.serializer_class(instance).data, "Preset instancji głównej został zmieniony")
 
     @action(detail=True, methods=['post'], url_path='download_mods')

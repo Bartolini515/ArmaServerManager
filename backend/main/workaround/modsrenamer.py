@@ -1,6 +1,7 @@
 import os
+from ..utils.operation_logging import LogCallback
 
-def lowercase_addons_directory(wid: str, source_dir: str, log_callback: callable = None) -> None:
+def lowercase_addons_directory(wid: str, source_dir: str, log_callback: LogCallback | None = None) -> None:
     """Lowercases the names of all files and directories in the addons directory of a mod.
 
     Args:

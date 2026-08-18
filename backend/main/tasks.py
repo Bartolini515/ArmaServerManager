@@ -1,10 +1,13 @@
+import sys
+
 from celery import shared_task
 from .models import Instances
 from .steamcmd.mods_download import download_mods
 from .modpreset.preset_extraction import preset_parser
 from .modpreset.modpathing import check_installed
 from .serverhandling.start_server import start_server
-from .utils.logger import Logger
+from .utils.config import config
+from .utils.operation_logging import operation_loggers
 import psutil
 from django.core.cache import cache
 from servermanager.celery import app as celery_app
@@ -37,37 +40,64 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
     try:
         self.update_state(state='PROGRESS', meta={'status': 'Rozpoczynanie pobierania...'})
         
-        operations_logger = Logger(name="operations", user=user)
-        download_logger = Logger(name="download", user=user)
-        workshop_ids = preset_parser(file_path, log_callback=operations_logger.log)
-        mods_to_download = check_installed(wids=workshop_ids, mods_dir=mods_directory, log_callback=operations_logger.log)[1]
-        if mods_to_download:
-            def progress_callback(current: int, total: int):
-                """Update the task state with the current download progress.
+        with operation_loggers(
+            config.get("paths.logs_directory", "/logs"),
+            user,
+            ("operations", "download"),
+            grouped=True,
+        ) as loggers:
+            operations_logger = loggers["operations"]
+            download_logger = loggers["download"]
 
-                Args:
-                    current (int): The number of mods downloaded so far.
-                    total (int): The total number of mods to download.
-                """
-                self.update_state(state='PROGRESS', meta={'status': f'Pobieranie modów... {current}/{total}'})
+            def download_error_callback(message: str) -> None:
+                """Use traceback logging when the callback runs in an exception."""
+                if sys.exc_info()[0] is not None:
+                    download_logger.exception(message)
+                else:
+                    download_logger.error(message)
 
-            failed_mods = download_mods(mods_to_download=mods_to_download, name=name, logger=download_logger, progress_callback=progress_callback)
+            try:
+                workshop_ids = preset_parser(file_path, log_callback=operations_logger.info)
+                mods_to_download = check_installed(
+                    wids=workshop_ids,
+                    mods_dir=mods_directory,
+                    log_callback=operations_logger.info,
+                )[1]
+                if mods_to_download:
+                    def progress_callback(current: int, total: int):
+                        """Update the task state with the current download progress.
 
-            if failed_mods:
-                raise Exception(f'Nie udało się pobrać modów: {failed_mods}')
+                        Args:
+                            current (int): The number of mods downloaded so far.
+                            total (int): The total number of mods to download.
+                        """
+                        self.update_state(state='PROGRESS', meta={'status': f'Pobieranie modów... {current}/{total}'})
 
-        instance = Instances.objects.get(id=instance_id)
-        instance.is_ready = True
-        instance.save()
+                    failed_mods = download_mods(
+                        mods_to_download=mods_to_download,
+                        name=name,
+                        log_callback=download_logger.info,
+                        error_callback=download_error_callback,
+                        progress_callback=progress_callback,
+                    )
 
-        self.update_state(state='SUCCESS', meta={'status': 'Pobieranie zakończone pomyślnie!'})
-        Logger.write_all_logs(one_directory=True, user=user)
+                    if failed_mods:
+                        raise Exception(f'Nie udało się pobrać modów: {failed_mods}')
+
+                instance = Instances.objects.get(id=instance_id)
+                instance.is_ready = True
+                instance.save()
+
+                self.update_state(state='SUCCESS', meta={'status': 'Pobieranie zakończone pomyślnie!'})
+            except Exception:
+                download_logger.exception("Mod download task failed.")
+                raise
+
         cache.delete(cache_key)
         return {'status': 'Pobieranie zakończone pomyślnie!'}
-    except Exception as e:
-        Logger.write_all_logs(one_directory=True, user=user)
+    except Exception:
         cache.delete(cache_key)
-        raise e
+        raise
     
 @shared_task(bind=True)
 def start_server_task(self, instance_id: int, arma3_dir: str) -> dict:

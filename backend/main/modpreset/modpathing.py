@@ -1,14 +1,15 @@
 import os
+from ..utils.operation_logging import LogCallback
 
 
 
-def mod_path(mods_dir: str, wid: str, log_callback: callable = None) -> str:
+def mod_path(mods_dir: str, wid: str, log_callback: LogCallback | None = None) -> str:
     """Generate the file path for a mod.
 
     Args:
         mods_dir (str): The directory where mods are stored.
         wid (str): The workshop ID of the mod.
-        log_callback (Logger.log): The logging callback function.
+        log_callback (LogCallback, optional): The logging callback function.
 
     Returns:
         str: The generated file path for the mod.
@@ -18,7 +19,7 @@ def mod_path(mods_dir: str, wid: str, log_callback: callable = None) -> str:
         log_callback(f"Generated mod path for {wid}: {path}")
     return path
 
-def check_installed(wids: list, mods_dir: str, log_callback: callable = None) -> tuple:
+def check_installed(wids: list, mods_dir: str, log_callback: LogCallback | None = None) -> tuple:
     """Check if mods are installed.
 
     Args:

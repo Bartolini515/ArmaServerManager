@@ -1,9 +1,10 @@
 import os
 import shutil
+from ..utils.operation_logging import LogCallback
 
 
 class GhostFolder:
-    def __init__(self, name: str, path: str, log_callback: callable = None) -> None:
+    def __init__(self, name: str, path: str, log_callback: LogCallback | None = None) -> None:
         """Represents a ghost folder for temporarily storing downloaded files.
 
         Args:
