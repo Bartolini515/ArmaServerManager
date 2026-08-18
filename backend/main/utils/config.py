@@ -23,7 +23,7 @@ class Config:
             self._load()
 
     def _create_blank_config(self):
-        """Creates a blank configuration file"""
+        """Create and persist the non-secret configuration shape if absent."""
         default_config = {
             "paths": {
                 "steamcmd": "",
@@ -84,7 +84,10 @@ class Config:
         """Updates the config with a new dictionary, merging it deeply.
 
         Args:
-            new_config (dict): A dictionary with new values to merge into the original.
+        new_config (dict): A dictionary with new values to merge into the original.
+
+        The merged object is written to the configured JSON path immediately;
+        callers must provide an approved runtime path and must not log secrets.
         """
         self._deep_update(self.config, new_config)
         with open(self.file_path, 'w') as file:

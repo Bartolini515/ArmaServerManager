@@ -32,6 +32,7 @@ class Profile(AbstractUser):
         return self.username
     
     def delete(self, *args, **kwargs):
+        """Remove the profile and its generated server configuration file."""
         if self.server_config and os.path.exists(self.server_config):
             os.remove(self.server_config)
         super().delete(*args, **kwargs)
@@ -60,6 +61,7 @@ class Instances(models.Model):
         return self.name
     
     def delete(self, *args, **kwargs):
+        """Delete instance-owned files and release its reserved port before removal."""
         if self.preset and os.path.exists(self.preset.path):
             os.remove(self.preset.path)
         if self.log_file and os.path.exists(self.log_file.path):
@@ -85,9 +87,7 @@ class Missions(models.Model):
         return os.path.basename(self.mission_file.name)
 
     def delete(self, *args, **kwargs):
-        """
-        Deletes the mission file from storage when the model instance is deleted.
-        """
+        """Delete the stored mission file when the model instance is deleted."""
         if self.mission_file and os.path.exists(self.mission_file.path):
             os.remove(self.mission_file.path)
         super().delete(*args, **kwargs)

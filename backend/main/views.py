@@ -177,6 +177,8 @@ class ServicesViewset(viewsets.ViewSet):
         })
         
 class InstancesViewset(viewsets.ModelViewSet):
+    """Expose instance CRUD and task-backed host operations."""
+
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = InstanceSerializer
     queryset = Instances.objects.all()
@@ -195,6 +197,7 @@ class InstancesViewset(viewsets.ModelViewSet):
         })
 
     def create(self, request):
+        """Reserve a port, persist an instance, and generate its host files."""
         user = self.request.user
         
         serializer = self.serializer_class(data=request.data)
@@ -227,6 +230,7 @@ class InstancesViewset(viewsets.ModelViewSet):
             return Response(serializer.errors, status=400)
     
     def destroy(self, request, pk=None):
+        """Delete a stopped instance and release model-owned files and port."""
         try:
             instance = self.get_object()
         except Instances.DoesNotExist:
@@ -242,6 +246,7 @@ class InstancesViewset(viewsets.ModelViewSet):
     
     @action(detail=True, methods=["post"], url_path="start")
     def start(self, request, pk=None):
+        """Validate readiness and enqueue an asynchronous server start."""
         user = self.request.user
         
         try:
@@ -304,6 +309,7 @@ class InstancesViewset(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="stop")
     def stop(self, request, pk=None):
+        """Enqueue process termination for a running instance."""
         try:
             instance = Instances.objects.get(pk=pk)
         except Instances.DoesNotExist:
@@ -364,6 +370,7 @@ class InstancesViewset(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='download_mods')
     def download_mods(self, request, pk=None):
+        """Enqueue Steam Workshop downloads for the instance preset."""
         instance = Instances.objects.get(pk=pk)
         if instance.is_admin_instance:
             user = get_super_user()
@@ -390,6 +397,7 @@ class InstancesViewset(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'], url_path='task_status/(?P<task_id>[^/.]+)')
     def task_status(self, request, task_id=None):
+        """Return the current Celery state and result metadata for a task ID."""
         task_result = AsyncResult(task_id)
         if not task_result:
             return Response({"message": "Zadanie nie zostało znalezione"}, status=404)
@@ -407,6 +415,7 @@ class InstancesViewset(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='logs')
     def logs(self, request, pk=None):
+        """Read an instance log, optionally returning only its last lines."""
         try:
             instance = Instances.objects.get(pk=pk)
         except Instances.DoesNotExist:

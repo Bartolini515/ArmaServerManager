@@ -15,13 +15,14 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
     """Downloads mods based on the provided file path and directory.
 
     Args:
-        instance: The object of an instance.
+        instance_id: The database ID whose readiness flag is updated on success.
         name (str): The name of the instance.
         file_path (str): The path to the file containing the mod list.
         mods_directory (str): The directory where mods are located.
 
     Returns:
-        dict: The result of the download operation.
+        dict: The result of the download operation. The task also writes logs,
+            updates Redis task state, and invokes SteamCMD for missing mods.
     """
     cache_key = f"download_task_{instance_id}"
     existing_task_id = cache.get(cache_key)
@@ -77,7 +78,8 @@ def start_server_task(self, instance_id: int, arma3_dir: str) -> dict:
         arma3_dir (str): The directory where Arma 3 is located.
         
     Returns:
-        dict: The result of the start operation.
+        dict: The result of the start operation. On success the instance PID and
+            `is_running` flag are persisted after the host process is spawned.
     """
     try:
         instance = Instances.objects.get(id=instance_id)
@@ -114,7 +116,8 @@ def stop_server_task(self, instance_id: int) -> dict:
         instance_id (int): The ID of the instance to stop.
         
     Returns:
-        dict: The result of the stop operation.
+        dict: The result of the stop operation. The task may terminate child
+            processes and clears the stored PID and running flag.
     """
     try:
         instance = Instances.objects.get(id=instance_id)
@@ -181,7 +184,7 @@ def stop_server_task(self, instance_id: int) -> dict:
     
 @shared_task()
 def check_all_servers_status_task():
-    """Checks the status of all servers and updates their state."""
+    """Reconcile stored instance flags with host process existence."""
     instances = Instances.objects.all()
     for instance in instances:
         if instance.pid and psutil.pid_exists(instance.pid):
@@ -194,7 +197,7 @@ def check_all_servers_status_task():
 
 @shared_task()
 def instance_timeout_task(instance_id: int):
-    """Handles the timeout for a specific instance."""
+    """Delegate a one-hour temporary-instance timeout to the stop task."""
     try:
         instance = Instances.objects.get(id=instance_id)
         if instance.is_running:
