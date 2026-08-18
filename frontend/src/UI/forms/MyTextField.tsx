@@ -1,11 +1,16 @@
 import "../../App.css";
 import TextField from "@mui/material/TextField";
-import { Controller } from "react-hook-form";
+import {
+	Controller,
+	type Control,
+	type FieldPath,
+	type FieldValues,
+} from "react-hook-form";
 
-interface Props {
+interface Props<TFieldValues extends FieldValues> {
 	label: string;
 	name: string;
-	control: any;
+	control: Control<TFieldValues>;
 	variant?: "standard" | "filled" | "outlined";
 	style?: import("@mui/system").SxProps<import("@mui/material").Theme>;
 	multiline?: boolean;
@@ -13,10 +18,12 @@ interface Props {
 	helperText?: string;
 }
 
-export default function MyTextField(props: Props) {
+export default function MyTextField<TFieldValues extends FieldValues>(
+	props: Props<TFieldValues>,
+) {
 	return (
 		<Controller
-			name={props.name}
+			name={props.name as FieldPath<TFieldValues>}
 			control={props.control}
 			render={({ field: { onChange, value }, fieldState: { error } }) => (
 				<TextField

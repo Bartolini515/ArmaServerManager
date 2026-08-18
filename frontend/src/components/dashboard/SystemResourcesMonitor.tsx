@@ -45,7 +45,7 @@ export default function SystemResourcesMonitor() {
 				setSystemInfo(response.data);
 				setLoading(false);
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
 				setAlert("Unable to retrieve system information", "error");
 			});

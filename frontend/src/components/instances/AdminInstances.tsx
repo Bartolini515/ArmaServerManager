@@ -4,6 +4,7 @@ import AxiosInstance from "../AxiosInstance";
 import InstanceCard from "./InstanceCard";
 import { Stack, Typography } from "@mui/material";
 import ChangePresetModal from "./modals/ChangePresetModal";
+import { getApiErrorMessage } from "../../util/api-error";
 
 interface Instance {
 	id: number;
@@ -80,14 +81,9 @@ export default function AdminInstances(props: Props) {
 					},
 				}));
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -103,14 +99,9 @@ export default function AdminInstances(props: Props) {
 					},
 				}));
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -126,14 +117,9 @@ export default function AdminInstances(props: Props) {
 					},
 				}));
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -205,11 +191,11 @@ export default function AdminInstances(props: Props) {
 			{openChangePresetModal && selectedAdminInstanceId && (
 				<ChangePresetModal
 					open={openChangePresetModal}
-					onClose={() => (
-						setOpenChangePresetModal(false),
-						setSelectedAdminInstanceId(null),
-						props.setRefresh(true)
-					)}
+					onClose={() => {
+						setOpenChangePresetModal(false);
+						setSelectedAdminInstanceId(null);
+						props.setRefresh(true);
+					}}
 					selectedAdminInstanceId={selectedAdminInstanceId}
 				/>
 			)}

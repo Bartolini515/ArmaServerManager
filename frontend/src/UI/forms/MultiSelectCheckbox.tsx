@@ -20,7 +20,7 @@ const MenuProps = {
 interface Props {
 	label: string;
 	options: string[];
-	setSelectedValue: any;
+	setSelectedValue: (value: string[]) => void;
 	selectedValue: string[];
 }
 

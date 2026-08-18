@@ -1,16 +1,17 @@
 import axios from "axios";
+import type { AxiosRequestConfig } from "axios";
 
 const myBaseUrl = import.meta.env.VITE_BASE_URL || "http://127.0.0.1:8000/api/";
 const isDebug = import.meta.env.VITE_DEBUG !== "false";
 
-const config = {
+const config: AxiosRequestConfig = {
 	baseURL: myBaseUrl,
 	timeout: 10000,
 	headers: {
 		"Content-Type": "application/json",
 		Accept: "application/json",
 	},
-} as any;
+};
 
 if (!isDebug) {
 	Object.assign(config, {

@@ -10,6 +10,17 @@ import { useForm } from "react-hook-form";
 import MyButton from "../../../UI/forms/MyButton";
 import { useAlert } from "../../../contexts/AlertContext";
 import { useEffect, useState } from "react";
+import {
+	getApiErrorData,
+	getApiErrorMessage,
+	getApiErrorStatus,
+	getFieldErrorMessage,
+	isRecord,
+} from "../../../util/api-error";
+import type {
+	ConfigModeratorFormData,
+	ConfigModeratorOption,
+} from "../types";
 
 const style = {
 	position: "absolute",
@@ -28,35 +39,12 @@ const style = {
 };
 
 interface Props {
-	option: {
-		name: string;
-		axiosUrl: string;
-		labelModal: string;
-		buttonSend: string;
-		forms: {
-			first_field: {
-				title: string | null;
-				label: string;
-				name: string;
-				helperText?: string;
-			};
-		};
-		payload: (data: any) => any;
-	};
+	option: ConfigModeratorOption;
 	open: boolean;
-	setOpen: any;
+	setOpen: (value: boolean) => void;
 }
 
-interface FormData {
-	steamcmd?: string;
-	arma3?: string;
-	mods_directory?: string;
-	logs_directory?: string;
-	download_directory?: string;
-	username?: string;
-	password?: string;
-	shared_secret?: string;
-}
+type FormData = ConfigModeratorFormData;
 
 export default function ConfigModeratorPanel(props: Props) {
 	const { handleSubmit, control, setError, clearErrors, reset } =
@@ -97,14 +85,9 @@ export default function ConfigModeratorPanel(props: Props) {
 				});
 				setLoading(false);
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response.data.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -126,40 +109,31 @@ export default function ConfigModeratorPanel(props: Props) {
 					handleClose();
 					setAlert(response.data.message, "success");
 				})
-				.catch((error: any) => {
-					if (
-						error.response &&
-						error.response.data &&
-						error.response.status === 400
-					) {
-						const serverErrors = error.response.data;
-						const path_errors = serverErrors.paths;
-						if (path_errors) {
-							Object.keys(path_errors).forEach((field) => {
+				.catch((error: unknown) => {
+					const serverErrors = getApiErrorData(error);
+					if (getApiErrorStatus(error) === 400 && serverErrors) {
+						const pathErrors = serverErrors.paths;
+						if (isRecord(pathErrors)) {
+							Object.keys(pathErrors).forEach((field) => {
 								setError(field as keyof FormData, {
 									type: "server",
-									message: path_errors[field][0],
+									message: getFieldErrorMessage(pathErrors, field),
 								});
 							});
 						}
 
-						const steam_auth_errors = serverErrors.steam_auth;
-						if (steam_auth_errors) {
-							Object.keys(steam_auth_errors).forEach((field) => {
+						const steamAuthErrors = serverErrors.steam_auth;
+						if (isRecord(steamAuthErrors)) {
+							Object.keys(steamAuthErrors).forEach((field) => {
 								setError(field as keyof FormData, {
 									type: "server",
-									message: steam_auth_errors[field][0],
+									message: getFieldErrorMessage(steamAuthErrors, field),
 								});
 							});
 						}
 					} else {
 						console.log(error);
-						setAlert(
-							error.response.data.message
-								? error.response.data.message
-								: error.message,
-							"error"
-						);
+						setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 					}
 				});
 		}
@@ -172,7 +146,7 @@ export default function ConfigModeratorPanel(props: Props) {
 		// 		handleClose();
 		// 		setAlert(response.data.message, "success");
 		// 	})
-		// 	.catch((error: any) => {
+		// 	.catch((error: unknown) => {
 		// 		if (
 		// 			error.response &&
 		// 			error.response.data &&

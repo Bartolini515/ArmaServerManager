@@ -90,7 +90,7 @@ export default function AccountMenu() {
 			>
 				<MenuItem
 					onClick={() => {
-						handleClose;
+						handleClose();
 						navigate("/account");
 					}}
 				>

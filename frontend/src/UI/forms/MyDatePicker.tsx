@@ -1,23 +1,30 @@
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
 import "../../App.css";
-import { Controller } from "react-hook-form";
+import {
+	Controller,
+	type Control,
+	type FieldPath,
+	type FieldValues,
+} from "react-hook-form";
 import { FormControl, FormHelperText } from "@mui/material";
 
-interface Props {
+interface Props<TFieldValues extends FieldValues> {
 	label: string;
 	name: string;
 	helperText?: string;
 	disablePast?: boolean;
 	maxDate?: Date | null | undefined;
 	defaultValue?: Date | null | undefined;
-	control: any;
+	control: Control<TFieldValues>;
 	views?: ["year", "month", "day"];
 }
 
-export default function MyDatePicker(props: Props) {
+export default function MyDatePicker<TFieldValues extends FieldValues>(
+	props: Props<TFieldValues>,
+) {
 	return (
 		<Controller
-			name={props.name}
+			name={props.name as FieldPath<TFieldValues>}
 			control={props.control}
 			render={({ field: { onChange, value }, fieldState: { error } }) => (
 				<FormControl>

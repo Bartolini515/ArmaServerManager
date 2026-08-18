@@ -9,8 +9,8 @@ interface AuthContextType {
 
 interface UserType {
 	id: number;
-	username: String;
-	last_login: String;
+	username: string;
+	last_login: string;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);

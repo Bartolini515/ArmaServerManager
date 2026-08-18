@@ -18,29 +18,20 @@ import { useAlert } from "../../../contexts/AlertContext";
 import ModifyForPanelDataModal from "../modals/ModifyForPanelDataModal";
 import { toDate } from "date-fns";
 import AlertDialog from "../../../UI/dialogs/AlertDialog";
+import type { UserModeratorOption } from "../types";
+import { getApiErrorMessage } from "../../../util/api-error";
+
+type TableCellValue = string | number | boolean | null;
+type TableRow = { id: number; [key: string]: TableCellValue };
 
 interface Props {
-	option: {
-		name: string;
-		label: string;
-		labelSingle: string;
-		headers: string[];
-		buttonAdd: string;
-		forms: {
-			first_field: {
-				title: string;
-				label: string;
-				name: string;
-			};
-		};
-		payload: (data: any) => any;
-	};
+	option: UserModeratorOption;
 	refresh: boolean;
 	setRefresh: (value: boolean) => void;
 }
 
 export default function ModeratorPanelDataManagementTable(props: Props) {
-	const [data, setData] = useState<{ id: number; [key: string]: any }[]>([]);
+	const [data, setData] = useState<TableRow[]>([]);
 	const [clickedId, setClickedId] = useState<number>(0);
 	const [open, setOpen] = useState<boolean>(false);
 	const [openDialog, setOpenDialog] = useState<boolean>(false);
@@ -51,14 +42,18 @@ export default function ModeratorPanelDataManagementTable(props: Props) {
 	const GetData = () => {
 		AxiosInstance.get(`moderator_panel/${props.option.name}/`)
 			.then((response) => {
-				const sortedData = response.data.sort((a: any, b: any) => a.id - b.id);
+				const sortedData = [...(response.data as TableRow[])].sort(
+					(a, b) => a.id - b.id,
+				);
 				if (props.option.name === "user") {
-					sortedData.forEach((element: any) => {
-						element["last_login"]
-							? (element["last_login"] = toDate(
-									new Date(element["last_login"])
-							  ).toLocaleString())
-							: (element["last_login"] = "Brak logowania");
+					sortedData.forEach((element) => {
+						if (element.last_login) {
+							element.last_login = toDate(
+								new Date(String(element.last_login)),
+							).toLocaleString();
+						} else {
+							element.last_login = "Brak logowania";
+						}
 					});
 				}
 				setData(sortedData);
@@ -66,14 +61,9 @@ export default function ModeratorPanelDataManagementTable(props: Props) {
 				props.setRefresh(false);
 				setLoading(false);
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -87,14 +77,9 @@ export default function ModeratorPanelDataManagementTable(props: Props) {
 				props.setRefresh(true);
 				setAlert(response.data.message, "success");
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
-				setAlert(
-					error.response?.data?.message
-						? error.response.data.message
-						: error.message,
-					"error"
-				);
+				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
 			});
 	};
 
@@ -103,7 +88,7 @@ export default function ModeratorPanelDataManagementTable(props: Props) {
 		setOpenDialog(true);
 	};
 
-	const handleClickModify = (id: any) => {
+	const handleClickModify = (id: number) => {
 		setClickedId(id);
 		setOpen(true);
 	};

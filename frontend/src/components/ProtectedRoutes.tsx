@@ -20,7 +20,7 @@ export default function ProtectedRoutes() {
 				setUser(response.data.user);
 				setIsAdmin(response.data.isAdmin);
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
 				localStorage.removeItem("Token");
 				return <Navigate to="/" />;

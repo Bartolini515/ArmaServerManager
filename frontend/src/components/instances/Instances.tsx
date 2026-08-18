@@ -8,6 +8,7 @@ import { useAuth } from "../../contexts/AuthContext";
 import { useAlert } from "../../contexts/AlertContext";
 import FAB from "../../UI/forms/FAB";
 import CreateInstanceModal from "./modals/CreateInstanceModal";
+import { getApiErrorMessage } from "../../util/api-error";
 import { useInterval } from "../../hooks/use-interval";
 
 interface Instance {
@@ -128,20 +129,16 @@ export default function Instances() {
 							setAlert(`${alerts_messages.failure} ${status}`, "error");
 						}
 					})
-					.catch((error: any) => {
+					.catch((error: unknown) => {
 						console.log(error);
-						setAlert(
-							error.response.data.message
-								? error.response.data.message
-								: error.message,
-							"error"
-						);
+						const message = getApiErrorMessage(error, "Nieznany błąd");
+						setAlert(message, "error");
 						setDict((prev) => ({
 							...prev,
 							[Number(instanceId)]: {
 								...prev[Number(instanceId)],
 								state: "FAILURE",
-								status: `Wystąpił błąd: ${error.message}`,
+								status: `Wystąpił błąd: ${message}`,
 							},
 						}));
 					});
@@ -161,7 +158,7 @@ export default function Instances() {
 				}
 				setLoading(false);
 			})
-			.catch((error: any) => {
+			.catch((error: unknown) => {
 				console.log(error);
 				setAlert("Unable to retrieve system information", "error");
 			});
@@ -232,7 +229,8 @@ export default function Instances() {
 				<CreateInstanceModal
 					open={openCreateInstanceModal}
 					onClose={() => {
-						setOpenCreateInstanceModal(false), setRefresh(true);
+					setOpenCreateInstanceModal(false);
+					setRefresh(true);
 					}}
 				/>
 			)}

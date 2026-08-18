@@ -1,30 +1,47 @@
 import "../../App.css";
-import { Controller } from "react-hook-form";
-import { useDropzone } from "react-dropzone";
-import { type FC, type ChangeEventHandler, useMemo, useState } from "react";
+import {
+	Controller,
+	type Control,
+	type FieldPath,
+	type FieldValues,
+} from "react-hook-form";
+import {
+	type Accept,
+	type DropzoneOptions,
+	useDropzone,
+} from "react-dropzone";
+import {
+	type CSSProperties,
+	type FC,
+	type ChangeEventHandler,
+	useMemo,
+	useState,
+} from "react";
 
-interface Props {
+interface Props<TFieldValues extends FieldValues> {
 	label: string;
 	name: string;
-	control: any;
+	control: Control<TFieldValues>;
 	multiple?: boolean;
 	maxFiles?: number;
-	accept?: string | string[];
-	style?: import("@mui/system").SxProps<import("@mui/material").Theme>;
+	accept?: string | string[] | Accept;
+	style?: CSSProperties;
 	onSubmit?: (files: File[]) => void;
-	rest?: any;
+	rest?: Partial<DropzoneOptions>;
 	helperText?: string;
 }
 
-export default function MyDropzone(props: Props) {
+export default function MyDropzone<TFieldValues extends FieldValues>(
+	props: Props<TFieldValues>,
+) {
 	return (
 		<Controller
-			name={props.name}
+			name={props.name as FieldPath<TFieldValues>}
 			control={props.control}
 			render={({ field: { onChange }, fieldState: { error } }) => (
 				<Dropzone
 					multiple={props.multiple}
-					maxFiles={props.multiple}
+					maxFiles={props.maxFiles}
 					onChange={(e) =>
 						onChange(
 							props.multiple ? e.target.files : e.target.files?.[0] ?? null
@@ -33,7 +50,7 @@ export default function MyDropzone(props: Props) {
 					onSubmit={props.onSubmit}
 					accept={props.accept}
 					style={props.style}
-					error={error}
+					error={Boolean(error)}
 					helperText={error ? error.message : props.helperText}
 					{...props.rest}
 				/>
@@ -42,7 +59,7 @@ export default function MyDropzone(props: Props) {
 	);
 }
 
-const baseStyle = {
+const baseStyle: CSSProperties = {
 	flex: 1,
 	display: "flex",
 	flexDirection: "column",
@@ -58,15 +75,15 @@ const baseStyle = {
 	transition: "border .24s ease-in-out",
 };
 
-const focusedStyle = {
+const focusedStyle: Partial<CSSProperties> = {
 	borderColor: "#2196f3",
 };
 
-const acceptStyle = {
+const acceptStyle: Partial<CSSProperties> = {
 	borderColor: "#00e676",
 };
 
-const rejectStyle = {
+const rejectStyle: Partial<CSSProperties> = {
 	borderColor: "#ff1744",
 };
 
@@ -74,11 +91,12 @@ const Dropzone: FC<{
 	multiple?: boolean;
 	maxFiles?: number;
 	onChange?: ChangeEventHandler<HTMLInputElement>;
-	style?: React.CSSProperties;
+	style?: CSSProperties;
 	onSubmit?: (files: File[]) => void;
-	accept?: string | string[];
+	accept?: string | string[] | Accept;
 	error?: boolean;
 	helperText?: string;
+	rest?: Partial<DropzoneOptions>;
 }> = ({
 	multiple,
 	maxFiles,
@@ -88,7 +106,7 @@ const Dropzone: FC<{
 	accept,
 	error,
 	helperText,
-	...rest
+	rest,
 }) => {
 	const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
 
@@ -96,11 +114,14 @@ const Dropzone: FC<{
 		useDropzone({
 			multiple,
 			maxFiles,
-			accept: Array.isArray(accept)
-				? Object.fromEntries(accept.map((type) => [type, []]))
-				: accept
-				? { [accept]: [] }
-				: undefined,
+			accept:
+				typeof accept === "object" && !Array.isArray(accept)
+					? accept
+					: Array.isArray(accept)
+						? Object.fromEntries(accept.map((type) => [type, []]))
+						: accept
+							? { [accept]: [] }
+							: undefined,
 			onDropAccepted: (acceptedFiles) => {
 				setUploadedFiles((prev) => [...prev, ...acceptedFiles]);
 				if (onSubmit) {
@@ -118,12 +139,12 @@ const Dropzone: FC<{
 			...(isDragAccept ? acceptStyle : {}),
 			...(isDragReject ? rejectStyle : {}),
 		}),
-		[isFocused, isDragAccept, isDragReject]
+		[customStyle, isFocused, isDragAccept, isDragReject]
 	);
 
 	return (
 		<div className="container">
-			<div {...getRootProps({ style: style as React.CSSProperties })}>
+			<div {...getRootProps({ style })}>
 				<input {...getInputProps({ onChange })} />
 				<p>
 					{multiple
