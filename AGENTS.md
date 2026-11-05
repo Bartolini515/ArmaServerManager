@@ -1,53 +1,18 @@
 # ArmaServerManager agent guide
 
-## Purpose and scope
+ArmaServerManager is a Django/DRF and React/TypeScript application for managing Arma 3 servers. Code and tests define current behavior; verify documentation against them.
 
-ArmaServerManager is a Django/DRF plus React/TypeScript web application for controlled Arma 3 server management. The important domain flows are instance creation, preset and mod handling, asynchronous server lifecycle operations, log handling, mission upload, authentication, and administrator configuration.
+## Start here
 
-This file defines repository-wide working rules. Detailed behavior belongs in the linked documents and in the code/tests that implement it. Follow the closest nested `AGENTS.md` for backend or frontend work.
+- **Every task:** read [repository-wide working rules](docs/agents/repository-rules.md), including safety, approval and verification requirements.
+- **Backend or frontend work:** also read [backend instructions](backend/AGENTS.md) or [frontend instructions](frontend/AGENTS.md), respectively.
+- **Navigate a change:** use the [system map](docs/map/AGENTS.md) and [code map](docs/code-map.md).
+- **API, data, operations or configuration:** consult the relevant [architecture](docs/architecture.md), [API](docs/api.md), [data model](docs/data-model.md), [configuration](docs/configuration.md), [domain](docs/domain/), [risks](docs/known-risks.md) and [troubleshooting](docs/troubleshooting.md) documents.
+- **Local issues and specs:** see the [issue tracker](docs/agents/issue-tracker.md) and [triage labels](docs/agents/triage-labels.md).
+- **Domain vocabulary and decisions:** see [domain documentation rules](docs/agents/domain.md) and [ADRs](docs/decisions/README.md).
 
 ## Sources of truth
 
-- `backend/main/models.py` and `backend/main/migrations/` define the current data model and migration history.
-- `backend/main/urls.py` and `backend/main/views.py` define the REST API surface and permissions.
-- `backend/main/tasks.py` defines asynchronous mod/server operations.
-- `backend/main/utils/config.py` and `backend/servermanager/settings.py` define runtime configuration shapes.
-- `frontend/src/App.tsx`, `frontend/src/components/AxiosInstance.tsx`, contexts, and components define routes, authentication behavior, and UI/API coupling.
-- `docs/` explains verified current behavior; when it disagrees with code or tests, inspect the implementation and update all affected sources together.
-
-## Working rules
-
-- Inspect relevant code, tests, documentation, and repository status before editing.
-- Preserve unrelated and user-authored changes. Do not alter `.vscode/settings.json` unless explicitly requested.
-- For behavioral changes, use RED → GREEN → REFACTOR and add a focused regression test first.
-- Keep identifiers and source comments in English unless preserving an existing Polish user-facing string. New repository documentation is English.
-- Do not add production dependencies without explicit approval. Do not add Docker, deployment, or external integrations as part of documentation work.
-- Keep documentation current when changing routes, API responses, models, migrations, tasks, configuration keys, file contracts, or security boundaries.
-
-## Sensitive data and approval gates
-
-- Never read, copy, log, or test against real `.env`, `backend/data/config.json`, database contents, uploaded media, production logs, or Steam credentials.
-- Treat usernames, file names, paths, server logs, database records, and host process identifiers as operational data; anonymize them in fixtures and documentation.
-- Do not start/stop/kill Arma or SteamCMD processes, modify production data, run migrations against a real database, or contact external services without explicit approval.
-- Do not perform deployment, branch creation, commits, pushes, releases, or pull requests unless the user explicitly requests that exact action.
-
-## Verification and Definition of Done
-
-Run the safe repository check:
-
-```text
-pipenv run check
-```
-
-It runs dependency, documentation, backend syntax, frontend lint/build, and diff-whitespace checks. It explicitly skips Django tests because an isolated test database is not configured. Report that omission instead of implying full application-test coverage.
-
-A change is complete only when its relevant checks were actually run, the affected documentation is updated, no secrets or personal paths entered the diff, and the final report names changed files, checks, limitations, and any required follow-up.
-
-## Documentation duties
-
-- API, permission, or route changes → `docs/api.md` and `docs/code-map.md`.
-- Model, migration, file-storage, or cascade changes → `docs/data-model.md` and the relevant domain document.
-- Celery, process, mod, timeout, or log changes → `docs/architecture.md`, `docs/domain/instance-lifecycle.md`, and `docs/known-risks.md`.
-- Configuration changes → `docs/configuration.md` and `docs/known-risks.md` when sensitivity or operational safety changes.
-- New recurring diagnostic behavior → `docs/troubleshooting.md`.
-- Durable cross-cutting choices → a new ADR under `docs/decisions/`.
+- Backend models and migrations define data; URLs, views and serializers define the API; tasks define asynchronous operations; configuration code and Django settings define runtime shapes.
+- Frontend routes, API client, contexts and components define UI behavior and API coupling. Follow the relevant links in the system map to the implementation.
+- Existing documentation explains verified behavior. When it disagrees with code or tests, inspect the implementation and update affected sources together.

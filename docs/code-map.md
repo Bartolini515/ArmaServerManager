@@ -2,6 +2,8 @@
 
 This document maps responsibilities without attempting to list every file. The code and tests remain the source of truth for exact behavior.
 
+For capabilities and their main functions, see the [feature and function map](map/features.md).
+
 ## Backend
 
 | Area | Responsibility | Main locations |
