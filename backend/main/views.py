@@ -1,4 +1,5 @@
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
 from .serializers import *
@@ -18,6 +19,7 @@ from .utils.config import config
 from .utils.operation_logging import operation_loggers
 from celery.result import AsyncResult
 from .tasks import *
+from .instance_tasks import enqueue_instance_task
 from django.core.cache import cache
 from servermanager.celery import app as celery_app
 User = get_user_model()
@@ -182,18 +184,34 @@ class InstancesViewset(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = InstanceSerializer
     queryset = Instances.objects.all()
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff:
+            return self.queryset.all()
+        return self.queryset.filter(user=user, is_admin_instance=False)
+
+    def _get_authorized_instance(self, pk):
+        """Look up one instance through the shared owner-or-staff policy."""
+        instance = get_object_or_404(self.filter_queryset(self.get_queryset()), pk=pk)
+        self.check_object_permissions(self.request, instance)
+        return instance
 
     def list(self, request):
-        user = self.request.user
-        
-        queryset = self.queryset.filter(user=user)
-        serializer = self.serializer_class(queryset, many=True)
+        user = request.user
+        all_instances = self.queryset.all()
+        user_instances = all_instances.filter(user=user, is_admin_instance=False)
+        user_serializer = self.serializer_class(user_instances, many=True)
         if user.is_staff:
-            admin_instances = self.queryset.filter(is_admin_instance=True)
+            admin_instances = all_instances.filter(is_admin_instance=True)
             admin_serializer = self.serializer_class(admin_instances, many=True)
+            other_instances = all_instances.filter(is_admin_instance=False).exclude(user=user)
+            other_serializer = self.serializer_class(other_instances, many=True)
         return Response({
-            'user_instances': serializer.data,
-            'admin_instances': admin_serializer.data if user.is_staff else []
+            'user_instances': user_serializer.data,
+            'admin_instances': admin_serializer.data if user.is_staff else [],
+            'other_instances': other_serializer.data if user.is_staff else [],
         })
 
     def create(self, request):
@@ -250,7 +268,7 @@ class InstancesViewset(viewsets.ModelViewSet):
         """Delete a stopped instance and release model-owned files and port."""
         try:
             instance = self.get_object()
-        except Instances.DoesNotExist:
+        except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
         
         if instance.is_running:
@@ -264,29 +282,38 @@ class InstancesViewset(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"], url_path="start")
     def start(self, request, pk=None):
         """Validate readiness and enqueue an asynchronous server start."""
-        user = self.request.user
+        actor = self.request.user
         
         try:
-            instance = Instances.objects.get(pk=pk)
-            if instance.is_admin_instance and user.is_staff:
-                user = get_super_user()
-                if not user:
+            instance = self._get_authorized_instance(pk)
+            if instance.is_admin_instance and actor.is_staff:
+                operator = get_super_user()
+                if not operator:
                     return Response({"message": "Nie znaleziono administratora."}, status=404)
-        except Instances.DoesNotExist:
+            else:
+                operator = actor
+        except Http404:
             return Response({"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"}, status=404)
 
         if instance.is_running:
             return Response({"message": "Instancja jest już uruchomiona"}, status=400)
 
-        if self.queryset.filter(user=user, is_running=True).exists() and not instance.is_admin_instance:
+        operation_owner = instance.user
+        if (
+            self.queryset.filter(user=operation_owner, is_running=True).exists()
+            and not instance.is_admin_instance
+        ):
             return Response({"message": "Nie można posiadać uruchomionej więcej niż jednej instancji"}, status=400)
         
-        if self.queryset.filter(is_admin_instance=False, is_running=True).count() >= 5 and not user.is_staff:
+        if (
+            self.queryset.filter(is_admin_instance=False, is_running=True).count() >= 5
+            and not actor.is_staff
+        ):
             return Response({"message": "Przekroczono generalny limit 5 uruchomionych instancji. Spróbuj ponownie później."}, status=403)
         
         with operation_loggers(
             config.get("paths.logs_directory", "/logs"),
-            user.username,
+            operator.username,
             ("start",),
         ) as loggers:
             start_logger = loggers["start"]
@@ -307,13 +334,18 @@ class InstancesViewset(viewsets.ModelViewSet):
                 return Response({"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"}, status=400)
 
             try:
-                task = start_server_task.delay(
-                    instance_id=instance.id,
-                    arma3_dir=config.get("paths.arma3"),
+                task_id = enqueue_instance_task(
+                    instance,
+                    "start",
+                    start_server_task,
+                    kwargs={
+                        "instance_id": instance.id,
+                        "arma3_dir": config.get("paths.arma3"),
+                    },
                 )
-            except Exception as e:
+            except Exception:
                 start_logger.exception("Nie udało się rozpocząć zadania uruchamiania.")
-                return Response({"message": f"Nie udało się rozpocząć zadania uruchamiania: {str(e)}"}, status=500)
+                return Response({"message": "Nie udało się rozpocząć zadania uruchamiania."}, status=500)
 
             if not instance.is_admin_instance:
                 cache_key = f"terminate_task_{instance.id}"
@@ -323,38 +355,40 @@ class InstancesViewset(viewsets.ModelViewSet):
                 async_result = instance_timeout_task.apply_async(args=[instance.id], countdown=3600)
                 cache.set(cache_key, async_result.id, timeout=3660) # longer than task timeout
 
-            return Response({"task_id": task.id}, status=202)
+            return Response({"task_id": task_id}, status=202)
 
     @action(detail=True, methods=["post"], url_path="stop")
     def stop(self, request, pk=None):
         """Enqueue process termination for a running instance."""
         try:
-            instance = Instances.objects.get(pk=pk)
-        except Instances.DoesNotExist:
+            instance = self._get_authorized_instance(pk)
+        except Http404:
             return Response({"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"}, status=404)
 
         if not instance.is_running:
             return Response({"message": "Instancja jest już zatrzymana"}, status=400)
 
         try:
-            task = stop_server_task.delay(
-                instance_id=instance.id
+            task_id = enqueue_instance_task(
+                instance,
+                "stop",
+                stop_server_task,
+                kwargs={"instance_id": instance.id},
             )
-        except Exception as e:
-            return Response({"message": f"Nie udało się rozpocząć zadania zatrzymania: {str(e)}"}, status=500)
-        return Response({"task_id": task.id}, status=202)
+        except Exception:
+            return Response({"message": "Nie udało się rozpocząć zadania zatrzymania."}, status=500)
+        return Response({"task_id": task_id}, status=202)
 
     @action(detail=True, methods=["post"], url_path="admin_instance/change_preset", permission_classes=[permissions.IsAdminUser])
     def change_preset(self, request, pk=None):
         try:
-            user = get_super_user()
-        except Profile.DoesNotExist:
-            return Response({"message": "Nie znaleziono administratora."}, status=404)
-        
-        try:
-            instance = Instances.objects.get(pk=pk)
-        except Instances.DoesNotExist:
+            instance = self._get_authorized_instance(pk)
+        except Http404:
             return Response({"message": "Instancja nie została znaleziona."}, status=404)
+
+        user = get_super_user()
+        if not user:
+            return Response({"message": "Nie znaleziono administratora."}, status=404)
         
         if not instance.is_admin_instance:
             return Response({"message": "To nie jest instancja administracyjna."}, status=400)
@@ -402,7 +436,10 @@ class InstancesViewset(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='download_mods')
     def download_mods(self, request, pk=None):
         """Enqueue Steam Workshop downloads for the instance preset."""
-        instance = Instances.objects.get(pk=pk)
+        try:
+            instance = self._get_authorized_instance(pk)
+        except Http404:
+            return Response({"message": "Instancja nie została znaleziona"}, status=404)
         if instance.is_admin_instance:
             user = get_super_user()
             if not user:
@@ -415,23 +452,37 @@ class InstancesViewset(viewsets.ModelViewSet):
             return Response({"message": "Brak miejsca na dysku. Skontaktuj sie z administratorem."}, status=400)
         
         try:
-            task = download_mods_task.delay(
-                instance_id=instance.id,
-                user=user.username,
-                name=instance.name,
-                file_path=instance.preset.path,
-                mods_directory=config.get("paths.mods_directory")
+            task_id = enqueue_instance_task(
+                instance,
+                "download",
+                download_mods_task,
+                kwargs={
+                    "instance_id": instance.id,
+                    "user": user.username,
+                    "name": instance.name,
+                    "file_path": instance.preset.path,
+                    "mods_directory": config.get("paths.mods_directory"),
+                },
             )
         except Exception:
             return Response(
                 {"message": "Nie udało się rozpocząć zadania pobierania."},
                 status=500,
             )
-        return Response({'task_id': task.id}, status=202)
+        return Response({'task_id': task_id}, status=202)
 
     @action(detail=False, methods=['get'], url_path='task_status/(?P<task_id>[^/.]+)')
     def task_status(self, request, task_id=None):
         """Return the current Celery state and result metadata for a task ID."""
+        bindings = InstanceTask.objects.filter(pk=task_id)
+        if not request.user.is_staff:
+            bindings = bindings.filter(
+                instance__user=request.user,
+                instance__is_admin_instance=False,
+            )
+        if not bindings.exists():
+            return Response({"message": "Zadanie nie zostało znalezione"}, status=404)
+
         task_result = AsyncResult(task_id)
         if not task_result:
             return Response({"message": "Zadanie nie zostało znalezione"}, status=404)
@@ -454,8 +505,8 @@ class InstancesViewset(viewsets.ModelViewSet):
     def logs(self, request, pk=None):
         """Read an instance log, optionally returning only its last lines."""
         try:
-            instance = Instances.objects.get(pk=pk)
-        except Instances.DoesNotExist:
+            instance = self._get_authorized_instance(pk)
+        except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
         
         tail = request.query_params.get('tail')
@@ -495,8 +546,8 @@ class InstancesViewset(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'], url_path='logs/download')
     def download_logs(self, request, pk=None):
         try:
-            instance = Instances.objects.get(pk=pk)
-        except Instances.DoesNotExist:
+            instance = self._get_authorized_instance(pk)
+        except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
 
         log_path = instance.log_file.path if instance.log_file else None
@@ -513,8 +564,8 @@ class InstancesViewset(viewsets.ModelViewSet):
     @action(detail=True, methods=['delete'], url_path='logs/delete')
     def delete_logs(self, request, pk=None):
         try:
-            instance = Instances.objects.get(pk=pk)
-        except Instances.DoesNotExist:
+            instance = self._get_authorized_instance(pk)
+        except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
         
         if instance.is_running:

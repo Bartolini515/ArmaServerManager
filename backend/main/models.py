@@ -72,6 +72,28 @@ class Instances(models.Model):
             self.port.is_available = True
             self.port.save()
         super().delete(*args, **kwargs)
+
+
+class InstanceTask(models.Model):
+    """Persist the instance that owns a task before it is sent to Celery."""
+
+    class Kind(models.TextChoices):
+        START = "start", "Start"
+        STOP = "stop", "Stop"
+        DOWNLOAD = "download", "Download"
+
+    task_id = models.CharField(primary_key=True, max_length=255)
+    instance = models.ForeignKey(
+        Instances,
+        on_delete=models.CASCADE,
+        related_name="tasks",
+    )
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.kind}:{self.task_id}"
     
 class Ports(models.Model):
     port_number = models.IntegerField(unique=True)

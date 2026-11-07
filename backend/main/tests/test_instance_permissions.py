@@ -1,0 +1,401 @@
+from contextlib import contextmanager
+from datetime import timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TestCase
+from rest_framework.test import APIClient
+
+from main.instance_tasks import create_instance_task_binding
+from main.models import InstanceTask, Instances, Ports
+from main.tasks import start_server_task, stop_server_task
+
+
+User = get_user_model()
+
+
+class InstancePermissionTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="owner", password="test-password")
+        self.other = User.objects.create_user(username="other", password="test-password")
+        self.staff = User.objects.create_user(
+            username="staff", password="test-password", is_staff=True
+        )
+        self.quiet_staff = User.objects.create_user(
+            username="quiet-staff", password="test-password", is_staff=True
+        )
+        self.superuser = User.objects.create_superuser(
+            username="root", password="test-password"
+        )
+        self.client = APIClient()
+        self.next_port = 23000
+
+    def make_instance(
+        self,
+        owner=None,
+        *,
+        name=None,
+        is_admin_instance=False,
+        is_running=False,
+        with_log=False,
+    ):
+        owner = owner or self.owner
+        name = name or f"server-{self.next_port}"
+        port_number = self.next_port
+        self.next_port += 1
+        port = Ports.objects.create(port_number=port_number, is_available=False)
+        instance = Instances.objects.create(
+            name=name,
+            user=owner,
+            preset=SimpleUploadedFile(f"{name}.html", b"<html></html>"),
+            port=port,
+            is_admin_instance=is_admin_instance,
+            is_running=is_running,
+        )
+        if with_log:
+            instance.log_file.save(
+                f"{name}-log.txt",
+                SimpleUploadedFile(f"{name}-log.txt", b"invented log line\n"),
+                save=True,
+            )
+        return instance
+
+    def authenticate_as(self, user):
+        self.client.force_authenticate(user=user)
+
+    def test_list_sections_are_disjoint_and_regular_users_see_only_owned_instances(self):
+        owner_instance = self.make_instance(self.owner, name="owner-normal")
+        other_instance = self.make_instance(self.other, name="other-normal")
+        owner_admin_instance = self.make_instance(
+            self.owner, name="owner-admin", is_admin_instance=True
+        )
+        other_admin_instance = self.make_instance(
+            self.other, name="other-admin", is_admin_instance=True
+        )
+        staff_instance = self.make_instance(self.staff, name="staff-normal")
+        older_owner_task = create_instance_task_binding(owner_instance, "download")
+        newer_owner_task = create_instance_task_binding(owner_instance, "download")
+        InstanceTask.objects.filter(pk=older_owner_task.task_id).update(
+            created_at=newer_owner_task.created_at - timedelta(seconds=1)
+        )
+        staff_start_task = create_instance_task_binding(staff_instance, "start")
+        other_stop_task = create_instance_task_binding(other_instance, "stop")
+
+        self.authenticate_as(self.owner)
+        owner_data = self.client.get("/api/instances/").data
+        self.assertEqual(
+            [item["id"] for item in owner_data["user_instances"]],
+            [owner_instance.id],
+        )
+        self.assertEqual(owner_data["admin_instances"], [])
+        self.assertEqual(owner_data["other_instances"], [])
+        self.assertEqual(owner_data["user_instances"][0]["user"]["username"], "owner")
+        self.assertEqual(owner_data["user_instances"][0]["port"], str(owner_instance.port.port_number))
+        self.assertEqual(
+            owner_data["user_instances"][0]["active_tasks"],
+            {"download": newer_owner_task.task_id},
+        )
+        self.assertNotEqual(older_owner_task.task_id, newer_owner_task.task_id)
+
+        self.authenticate_as(self.staff)
+        staff_data = self.client.get("/api/instances/").data
+        sections = {
+            key: {item["id"] for item in staff_data[key]}
+            for key in ("user_instances", "admin_instances", "other_instances")
+        }
+        self.assertEqual(sections["user_instances"], {staff_instance.id})
+        self.assertEqual(
+            sections["admin_instances"],
+            {owner_admin_instance.id, other_admin_instance.id},
+        )
+        self.assertEqual(sections["other_instances"], {owner_instance.id, other_instance.id})
+        self.assertEqual(sum(len(items) for items in sections.values()), len(set().union(*sections.values())))
+        listed_tasks = {
+            item["id"]: item["active_tasks"]
+            for section in ("user_instances", "admin_instances", "other_instances")
+            for item in staff_data[section]
+        }
+        self.assertEqual(listed_tasks[staff_instance.id], {"start": staff_start_task.task_id})
+        self.assertEqual(listed_tasks[other_instance.id], {"stop": other_stop_task.task_id})
+
+    def test_all_instance_actions_use_owner_or_staff_scope(self):
+        action_cases = (
+            ("retrieve", "get", "", {}, 200),
+            ("delete", "delete", "", {"is_running": False}, 200),
+            ("start", "post", "start/", {"is_running": True}, 400),
+            ("stop", "post", "stop/", {"is_running": False}, 400),
+            ("download", "post", "download_mods/", {}, 202),
+            ("logs", "get", "logs/", {"with_log": True}, 200),
+            ("download logs", "get", "logs/download/", {"with_log": True}, 200),
+            (
+                "delete logs",
+                "delete",
+                "logs/delete/",
+                {"with_log": True, "is_running": True},
+                400,
+            ),
+        )
+
+        with (
+            patch("main.views.psutil.disk_usage", return_value=MagicMock(free=10**12)),
+            patch("main.views.config.get", return_value="/isolated/mods"),
+            patch("main.views.enqueue_instance_task", return_value="invented-task-id"),
+        ):
+            for admin_target in (False, True):
+                for label, method, suffix, options, allowed_status in action_cases:
+                    for actor in (self.owner, self.other, self.staff):
+                        expected_status = (
+                            404
+                            if actor == self.other or (admin_target and not actor.is_staff)
+                            else allowed_status
+                        )
+                        with self.subTest(
+                            admin_target=admin_target,
+                            action=label,
+                            actor=actor.username,
+                        ):
+                            instance = self.make_instance(
+                                self.owner,
+                                name=f"{label.replace(' ', '-')}-{actor.username}-{self.next_port}",
+                                is_admin_instance=admin_target,
+                                **options,
+                            )
+                            self.authenticate_as(actor)
+                            path = f"/api/instances/{instance.pk}/{suffix}"
+                            response = getattr(self.client, method)(path, format="json")
+                            self.assertEqual(response.status_code, expected_status)
+                            if label == "download" and expected_status == 202:
+                                self.assertEqual(response.data, {"task_id": "invented-task-id"})
+
+    def test_start_and_stop_keep_the_202_task_id_contract(self):
+        instance = self.make_instance(self.owner, name="queued-instance")
+        staff_running_instance = self.make_instance(
+            self.staff,
+            name="staff-running",
+            is_running=True,
+        )
+        self.authenticate_as(self.staff)
+
+        @contextmanager
+        def fake_operation_loggers(*args, **kwargs):
+            yield {"start": MagicMock()}
+
+        with (
+            patch("main.views.operation_loggers", side_effect=fake_operation_loggers),
+            patch("main.views.preset_parser", return_value=[]),
+            patch("main.views.check_installed", return_value=([], [])),
+            patch("main.views.check_sh_file_exists", return_value=True),
+            patch("main.views.config.get", return_value="/isolated/arma3"),
+            patch("main.views.enqueue_instance_task", return_value="start-task-id") as enqueue,
+            patch(
+                "main.views.instance_timeout_task.apply_async",
+                return_value=SimpleNamespace(id="timeout-task-id"),
+            ),
+            patch("main.views.cache.get", return_value=None),
+            patch("main.views.cache.set"),
+        ):
+            start_response = self.client.post(
+                f"/api/instances/{instance.pk}/start/", {}, format="json"
+            )
+
+        self.assertEqual(start_response.status_code, 202)
+        self.assertEqual(start_response.data, {"task_id": "start-task-id"})
+        enqueue.assert_called_once_with(
+            instance,
+            "start",
+            start_server_task,
+            kwargs={"instance_id": instance.pk, "arma3_dir": "/isolated/arma3"},
+        )
+
+        instance.is_running = True
+        instance.save(update_fields=["is_running"])
+        with patch("main.views.enqueue_instance_task", return_value="stop-task-id") as enqueue:
+            stop_response = self.client.post(
+                f"/api/instances/{instance.pk}/stop/", {}, format="json"
+            )
+
+        self.assertEqual(stop_response.status_code, 202)
+        self.assertEqual(stop_response.data, {"task_id": "stop-task-id"})
+        enqueue.assert_called_once_with(
+            instance,
+            "stop",
+            stop_server_task,
+            kwargs={"instance_id": instance.pk},
+        )
+        self.assertEqual(staff_running_instance.is_running, True)
+
+    def test_staff_start_limit_uses_target_owner_and_staff_stop_can_target_other_owner(self):
+        owner_running_instance = self.make_instance(
+            self.owner,
+            name="owner-running",
+            is_running=True,
+        )
+        target_instance = self.make_instance(self.owner, name="owner-target")
+        self.authenticate_as(self.quiet_staff)
+
+        @contextmanager
+        def fake_operation_loggers(*args, **kwargs):
+            yield {"start": MagicMock()}
+
+        with (
+            patch("main.views.operation_loggers", side_effect=fake_operation_loggers),
+            patch("main.views.preset_parser", return_value=[]),
+            patch("main.views.check_installed", return_value=([], [])),
+            patch("main.views.check_sh_file_exists", return_value=True),
+            patch("main.views.config.get", return_value="/isolated/arma3"),
+            patch("main.views.enqueue_instance_task", return_value="should-not-queue") as enqueue,
+            patch(
+                "main.views.instance_timeout_task.apply_async",
+                return_value=SimpleNamespace(id="timeout-task-id"),
+            ),
+            patch("main.views.cache.get", return_value=None),
+            patch("main.views.cache.set"),
+        ):
+            rejected = self.client.post(
+                f"/api/instances/{target_instance.pk}/start/", {}, format="json"
+            )
+
+        self.assertEqual(rejected.status_code, 400)
+        enqueue.assert_not_called()
+
+        target_instance.is_running = True
+        target_instance.save(update_fields=["is_running"])
+        with patch("main.views.enqueue_instance_task", return_value="staff-stop-task") as enqueue:
+            stopped = self.client.post(
+                f"/api/instances/{target_instance.pk}/stop/", {}, format="json"
+            )
+
+        self.assertEqual(stopped.status_code, 202)
+        self.assertEqual(stopped.data, {"task_id": "staff-stop-task"})
+        enqueue.assert_called_once_with(
+            target_instance,
+            "stop",
+            stop_server_task,
+            kwargs={"instance_id": target_instance.pk},
+        )
+        self.assertTrue(owner_running_instance.is_running)
+
+    def test_preset_replacement_is_staff_only_and_uses_scoped_instance_lookup(self):
+        instance = self.make_instance(
+            self.superuser, name="admin-preset", is_admin_instance=True
+        )
+        path = f"/api/instances/{instance.pk}/admin_instance/change_preset/"
+
+        for actor in (self.owner, self.other):
+            with self.subTest(actor=actor.username):
+                self.authenticate_as(actor)
+                response = self.client.post(
+                    path,
+                    {"preset": SimpleUploadedFile("replacement.html", b"new preset")},
+                    format="multipart",
+                )
+                self.assertEqual(response.status_code, 403)
+
+        self.authenticate_as(self.staff)
+        with (
+            patch("main.views.preset_parser", return_value=[]),
+            patch("main.views.generate_sh_file", return_value="/isolated/generated-start.sh"),
+            patch("main.views.config.get", return_value="/isolated/mods"),
+            patch("main.views.operation_loggers") as operation_loggers,
+            patch("main.views.os.path.exists", return_value=False),
+        ):
+            operation_loggers.return_value.__enter__.return_value = {
+                "change_preset": MagicMock()
+            }
+            operation_loggers.return_value.__exit__.return_value = False
+            response = self.client.post(
+                path,
+                {"preset": SimpleUploadedFile("replacement.html", b"new preset")},
+                format="multipart",
+            )
+        self.assertEqual(response.status_code, 200)
+        instance.refresh_from_db()
+        self.assertTrue(instance.preset.name.endswith("replacement.html"))
+
+        self.authenticate_as(self.staff)
+        missing_response = self.client.post(
+            "/api/instances/999999/admin_instance/change_preset/",
+            {"preset": SimpleUploadedFile("missing.html", b"new preset")},
+            format="multipart",
+        )
+        self.assertEqual(missing_response.status_code, 404)
+
+    def test_missing_instance_ids_are_404_for_owner_staff_and_detailed_actions(self):
+        action_cases = (
+            ("get", "/api/instances/999999/"),
+            ("delete", "/api/instances/999999/"),
+            ("post", "/api/instances/999999/start/"),
+            ("post", "/api/instances/999999/stop/"),
+            ("post", "/api/instances/999999/download_mods/"),
+            ("get", "/api/instances/999999/logs/"),
+            ("get", "/api/instances/999999/logs/download/"),
+            ("delete", "/api/instances/999999/logs/delete/"),
+        )
+        for actor in (self.owner, self.other, self.staff):
+            self.authenticate_as(actor)
+            for method, path in action_cases:
+                with self.subTest(actor=actor.username, path=path):
+                    response = getattr(self.client, method)(path, format="json")
+                    self.assertEqual(response.status_code, 404)
+
+    def test_generic_put_and_patch_are_disabled(self):
+        instance = self.make_instance(self.owner, name="immutable-instance")
+        self.authenticate_as(self.owner)
+        path = f"/api/instances/{instance.pk}/"
+
+        put_response = self.client.put(path, {"name": "changed-name"}, format="json")
+        patch_response = self.client.patch(path, {"name": "changed-name"}, format="json")
+
+        self.assertEqual(put_response.status_code, 405)
+        self.assertEqual(patch_response.status_code, 405)
+        instance.refresh_from_db()
+        self.assertEqual(instance.name, "immutable-instance")
+
+    def test_create_ignores_server_controlled_field_injection(self):
+        available_port = Ports.objects.create(port_number=self.next_port, is_available=True)
+        self.next_port += 1
+        self.authenticate_as(self.owner)
+
+        @contextmanager
+        def fake_operation_loggers(*args, **kwargs):
+            yield {"create": MagicMock()}
+
+        payload = {
+            "id": 88001,
+            "name": "safe-created",
+            "preset": SimpleUploadedFile("safe-created.html", b"<html></html>"),
+            "user": self.other.pk,
+            "port": "9999",
+            "pid": 123456,
+            "is_ready": True,
+            "is_running": True,
+            "is_admin_instance": True,
+            "start_file_path": "/attacker/start.sh",
+            "log_file": "/attacker/server.log",
+            "active_tasks": "attacker-task-id",
+            "created_at": "2020-01-01T00:00:00Z",
+        }
+
+        with (
+            patch("main.views.preset_parser", return_value=[]),
+            patch("main.views.generate_server_config", return_value="/isolated/server.cfg"),
+            patch("main.views.generate_sh_file", return_value="/isolated/generated-start.sh"),
+            patch("main.views.config.get", return_value="/isolated/path"),
+            patch("main.views.operation_loggers", side_effect=fake_operation_loggers),
+        ):
+            response = self.client.post("/api/instances/", payload, format="multipart")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        instance = Instances.objects.get(name="safe-created")
+        self.assertEqual(instance.user, self.owner)
+        self.assertEqual(instance.port, available_port)
+        self.assertIsNone(instance.pid)
+        self.assertFalse(instance.is_ready)
+        self.assertFalse(instance.is_running)
+        self.assertFalse(instance.is_admin_instance)
+        self.assertFalse(instance.log_file)
+        self.assertEqual(instance.start_file_path, "/isolated/generated-start.sh")
+        self.assertEqual(response.data["result"]["user"]["username"], "owner")
+        self.assertEqual(response.data["result"]["port"], str(available_port.port_number))

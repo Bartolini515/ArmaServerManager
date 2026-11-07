@@ -514,8 +514,13 @@ class SteamCmdSecretTests(unittest.TestCase):
             f"{STEAM_SHARED_SECRET} {STEAM_GUARD_CODE}"
         )
         request = RequestFactory().get("/api/instances/task_status/fake-task/")
+        request.user = SimpleNamespace(is_staff=True)
 
-        with patch("main.views.AsyncResult", return_value=failed_task):
+        with (
+            patch("main.views.InstanceTask.objects.filter") as task_bindings,
+            patch("main.views.AsyncResult", return_value=failed_task),
+        ):
+            task_bindings.return_value.exists.return_value = True
             response = InstancesViewset().task_status(request, task_id="fake-task")
 
         self.assertEqual(response.status_code, 200)
@@ -526,7 +531,11 @@ class SteamCmdSecretTests(unittest.TestCase):
             f"failed {STEAM_USERNAME} {STEAM_PASSWORD} "
             f"{STEAM_SHARED_SECRET} {STEAM_GUARD_CODE}"
         )
-        with patch("main.views.AsyncResult", return_value=failed_task):
+        with (
+            patch("main.views.InstanceTask.objects.filter") as task_bindings,
+            patch("main.views.AsyncResult", return_value=failed_task),
+        ):
+            task_bindings.return_value.exists.return_value = True
             response = InstancesViewset().task_status(request, task_id="fake-task")
 
         self.assertEqual(response.data["result"], {"status": "Nie udało się wykonać zadania."})
@@ -536,7 +545,11 @@ class SteamCmdSecretTests(unittest.TestCase):
             "status": f"failed {STEAM_USERNAME} {STEAM_PASSWORD} "
             f"{STEAM_SHARED_SECRET} {STEAM_GUARD_CODE}"
         }
-        with patch("main.views.AsyncResult", return_value=failed_task):
+        with (
+            patch("main.views.InstanceTask.objects.filter") as task_bindings,
+            patch("main.views.AsyncResult", return_value=failed_task),
+        ):
+            task_bindings.return_value.exists.return_value = True
             response = InstancesViewset().task_status(request, task_id="fake-task")
 
         self.assertEqual(response.data["result"], {"status": "Nie udało się wykonać zadania."})
@@ -557,10 +570,10 @@ class SteamCmdSecretTests(unittest.TestCase):
         )
 
         with (
-            patch("main.views.Instances.objects.get", return_value=instance),
+            patch.object(viewset, "_get_authorized_instance", return_value=instance),
             patch("main.views.psutil.disk_usage", return_value=Mock(free=10**12)),
             patch("main.views.config.get", return_value="/fake/mods"),
-            patch("main.views.download_mods_task.delay", side_effect=failure),
+            patch("main.views.enqueue_instance_task", side_effect=failure),
         ):
             response = viewset.download_mods(Mock(), pk=1)
 

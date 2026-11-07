@@ -1,7 +1,9 @@
 import sys
 
 from celery import shared_task
+from celery.exceptions import Retry
 from .models import Instances
+from .instance_tasks import track_instance_task
 from .steamcmd.mods_download import download_mods
 from .modpreset.preset_extraction import preset_parser
 from .modpreset.modpathing import check_installed
@@ -15,6 +17,7 @@ from servermanager.celery import app as celery_app
 from celery.result import AsyncResult
 
 @shared_task(bind=True)
+@track_instance_task
 def download_mods_task(self, instance_id: int, name: str, user: str, file_path: str, mods_directory: str) -> dict:
     """Downloads mods based on the provided file path and directory.
 
@@ -93,6 +96,8 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
                 instance.save()
 
                 self.update_state(state='SUCCESS', meta={'status': 'Pobieranie zakończone pomyślnie!'})
+            except Retry:
+                raise
             except Exception as exc:
                 diagnostic = safe_steam_diagnostic(exc, secret_redactor)
                 if diagnostic:
@@ -105,6 +110,8 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
 
         cache.delete(cache_key)
         return {'status': 'Pobieranie zakończone pomyślnie!'}
+    except Retry:
+        raise
     except Exception as exc:
         cache.delete(cache_key)
         raise SteamCommandError(
@@ -113,6 +120,7 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
         ) from None
     
 @shared_task(bind=True)
+@track_instance_task
 def start_server_task(self, instance_id: int, arma3_dir: str) -> dict:
     """Starts the Arma 3 server and saves its PID.
     
@@ -152,6 +160,7 @@ def start_server_task(self, instance_id: int, arma3_dir: str) -> dict:
         raise e
 
 @shared_task(bind=True)
+@track_instance_task
 def stop_server_task(self, instance_id: int) -> dict:
     """Stops the Arma 3 server by terminating its process.
     
