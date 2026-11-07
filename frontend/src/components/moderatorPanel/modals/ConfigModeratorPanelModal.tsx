@@ -98,12 +98,6 @@ export default function ConfigModeratorPanel(props: Props) {
 	const submission = (data: FormData) => {
 		const payload = props.option.payload(data);
 		if (props.option.name === "config") {
-			if (data.password === "********") {
-				delete payload.password;
-			}
-			if (data.shared_secret === "********") {
-				delete payload.shared_secret;
-			}
 			AxiosInstance.put(`moderator_panel/${props.option.axiosUrl}`, payload)
 				.then((response) => {
 					handleClose();

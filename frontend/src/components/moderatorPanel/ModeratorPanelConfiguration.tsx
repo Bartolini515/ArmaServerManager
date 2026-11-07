@@ -2,6 +2,7 @@ import { Box, Typography } from "@mui/material";
 import MyButton from "../../UI/forms/MyButton";
 import { useState } from "react";
 import ConfigModeratorPanelModal from "./modals/ConfigModeratorPanelModal";
+import { buildConfigPayload } from "./configPayload";
 import type { ConfigModeratorOption } from "./types";
 
 const optionsMap: Record<"config", ConfigModeratorOption> = {
@@ -19,20 +20,7 @@ const optionsMap: Record<"config", ConfigModeratorOption> = {
 					"Podaj ścieżkę do folderu steamcmd, np. '/path/to/steamcmd'",
 			},
 		},
-		payload: (data) => ({
-			paths: {
-				steamcmd: data.steamcmd,
-				arma3: data.arma3,
-				mods_directory: data.mods_directory,
-				logs_directory: data.logs_directory,
-				download_directory: data.download_directory,
-			},
-			steam_auth: {
-				username: data.username,
-				password: data.password,
-				shared_secret: data.shared_secret,
-			},
-		}),
+		payload: buildConfigPayload,
 	},
 };
 
