@@ -1,5 +1,10 @@
 import axios from "axios";
 import type { AxiosRequestConfig } from "axios";
+import {
+	getKnoxToken,
+	isPublicLoginRequest,
+	shouldInvalidateAuthSession,
+} from "../contexts/authSession";
 
 const myBaseUrl = import.meta.env.VITE_BASE_URL || "http://127.0.0.1:8000/api/";
 const isDebug = import.meta.env.VITE_DEBUG !== "false";
@@ -24,6 +29,11 @@ if (!isDebug) {
 const AxiosInstance = axios.create(config);
 
 AxiosInstance.interceptors.request.use((config) => {
+	if (isPublicLoginRequest(config.method, config.url)) {
+		config.headers.delete("Authorization");
+		return config;
+	}
+
 	const token = localStorage.getItem("Token");
 	if (config.headers["Content-Type"] === "multipart/form-data") {
 		config.timeout = 0;
@@ -40,11 +50,31 @@ AxiosInstance.interceptors.response.use(
 	(response) => {
 		return response;
 	},
-	(error) => {
-		if (error.response && error.response.status === 401) {
-			localStorage.removeItem("Token");
-			if (window.location.pathname !== "/") {
-				window.location.href = "/";
+	(error: unknown) => {
+		if (axios.isAxiosError(error)) {
+			const publicLogin = isPublicLoginRequest(
+				error.config?.method,
+				error.config?.url,
+			);
+			const authorization =
+				error.config?.headers?.get("Authorization") ??
+				error.config?.headers?.Authorization;
+			const failedRequestToken = getKnoxToken(authorization);
+			if (
+				!publicLogin &&
+				shouldInvalidateAuthSession(
+					error.response?.status,
+					error.config?.method,
+					error.config?.url,
+					failedRequestToken,
+					localStorage.getItem("Token"),
+				)
+			) {
+				localStorage.removeItem("Token");
+				window.dispatchEvent(new Event("auth:session-invalidated"));
+				if (window.location.pathname !== "/") {
+					window.location.href = "/";
+				}
 			}
 		}
 		return Promise.reject(error);

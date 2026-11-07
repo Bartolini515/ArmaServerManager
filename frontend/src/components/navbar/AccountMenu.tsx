@@ -25,11 +25,11 @@ export default function AccountMenu() {
 	};
 	const navigate = useNavigate();
 	const { setAlert } = useAlert();
-	const { user } = useAuth();
+	const { user, setToken } = useAuth();
 
 	const logoutUser = () => {
 		AxiosInstance.post(`logout/`, {}).then(() => {
-			localStorage.removeItem("Token");
+			setToken(null);
 			navigate("/");
 			setAlert("Wylogowano pomyślnie", "success");
 		});

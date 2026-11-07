@@ -1,4 +1,4 @@
-import { Routes, Route, useLocation } from "react-router";
+import { Routes, Route, Outlet, useLocation } from "react-router";
 import "./App.css";
 import "./index.css";
 import CssBaseline from "@mui/material/CssBaseline";
@@ -17,6 +17,10 @@ import ModeratorPanelConfiguration from "./components/moderatorPanel/ModeratorPa
 import ModeratorPanelDataManagement from "./components/moderatorPanel/ModeratorPanelDataManagement";
 import Missions from "./components/missions/Missions";
 import Settings from "./components/settings/Settings";
+
+function ProtectedNavigationShell() {
+	return <Navbar content={<Outlet />} />;
+}
 
 export default function App() {
 	const location = useLocation();
@@ -39,27 +43,25 @@ export default function App() {
 					<Route path="/change_password" element={<ChangePassword />} />
 				</Routes>
 			) : (
-				<Navbar
-					content={
-						<Routes>
-							<Route element={<ProtectedRoutes />}>
-								<Route path="/dashboard" element={<Dashboard />} />
-								<Route path="/account" element={<Account />} />
-								<Route path="/settings" element={<Settings />} />
-								<Route path="/instances" element={<Instances />} />
-								<Route path="/missions" element={<Missions />} />
-								<Route
-									path="/moderator_panel_data_management"
-									element={<ModeratorPanelDataManagement />}
-								/>
-								<Route
-									path="/moderator_panel_config"
-									element={<ModeratorPanelConfiguration />}
-								/>
-							</Route>
-						</Routes>
-					}
-				/>
+				<Routes>
+					<Route element={<ProtectedRoutes />}>
+						<Route element={<ProtectedNavigationShell />}>
+							<Route path="/dashboard" element={<Dashboard />} />
+							<Route path="/account" element={<Account />} />
+							<Route path="/settings" element={<Settings />} />
+							<Route path="/instances" element={<Instances />} />
+							<Route path="/missions" element={<Missions />} />
+							<Route
+								path="/moderator_panel_data_management"
+								element={<ModeratorPanelDataManagement />}
+							/>
+							<Route
+								path="/moderator_panel_config"
+								element={<ModeratorPanelConfiguration />}
+							/>
+						</Route>
+					</Route>
+				</Routes>
 			)}
 		</LocalizationProvider>
 	);
