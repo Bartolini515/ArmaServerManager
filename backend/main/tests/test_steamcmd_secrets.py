@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from django.test import RequestFactory
+from django.test import RequestFactory, TestCase
 
 from main.steamcmd.mods_download import assign_new_steamguard, steamcmd_download, test_connection
 from main.steamcmd.steam_auth import generate_steam_guard_code
@@ -53,7 +53,7 @@ class FakePipe:
         self.closed = True
 
 
-class SteamCmdSecretTests(unittest.TestCase):
+class SteamCmdSecretTests(TestCase):
     def setUp(self) -> None:
         self.redactor = SteamSecretRedactor(
             (
@@ -345,12 +345,15 @@ class SteamCmdSecretTests(unittest.TestCase):
 
     def test_test_connection_timeout_is_safe(self) -> None:
         process = Mock()
-        process.wait.side_effect = subprocess.TimeoutExpired(
+        process.communicate.side_effect = subprocess.TimeoutExpired(
             ["steamcmd.sh", f"+login {STEAM_USERNAME} {STEAM_PASSWORD}"],
             timeout=10,
         )
 
-        with patch("main.steamcmd.mods_download.subprocess.Popen", return_value=process):
+        with (
+            patch("main.steamcmd.mods_download.subprocess.Popen", return_value=process),
+            patch("main.steamcmd.mods_download.terminate_owned_process_tree", return_value=True) as cleanup,
+        ):
             with self.assertRaises(SteamCommandError) as raised:
                 test_connection(
                     "/fake/steamcmd",
@@ -362,6 +365,7 @@ class SteamCmdSecretTests(unittest.TestCase):
         self.assert_secrets_absent(str(raised.exception))
         self.assert_secrets_absent(raised.exception.diagnostic)
         self.assertIn("TimeoutExpired", raised.exception.diagnostic)
+        cleanup.assert_called_once_with(process)
 
     def test_called_process_error_command_is_safe(self) -> None:
         command = [
@@ -520,7 +524,7 @@ class SteamCmdSecretTests(unittest.TestCase):
             patch("main.views.InstanceTask.objects.filter") as task_bindings,
             patch("main.views.AsyncResult", return_value=failed_task),
         ):
-            task_bindings.return_value.exists.return_value = True
+            task_bindings.return_value.first.return_value = SimpleNamespace(superseded_at=None)
             response = InstancesViewset().task_status(request, task_id="fake-task")
 
         self.assertEqual(response.status_code, 200)
@@ -535,7 +539,7 @@ class SteamCmdSecretTests(unittest.TestCase):
             patch("main.views.InstanceTask.objects.filter") as task_bindings,
             patch("main.views.AsyncResult", return_value=failed_task),
         ):
-            task_bindings.return_value.exists.return_value = True
+            task_bindings.return_value.first.return_value = SimpleNamespace(superseded_at=None)
             response = InstancesViewset().task_status(request, task_id="fake-task")
 
         self.assertEqual(response.data["result"], {"status": "Nie udało się wykonać zadania."})
@@ -549,7 +553,7 @@ class SteamCmdSecretTests(unittest.TestCase):
             patch("main.views.InstanceTask.objects.filter") as task_bindings,
             patch("main.views.AsyncResult", return_value=failed_task),
         ):
-            task_bindings.return_value.exists.return_value = True
+            task_bindings.return_value.first.return_value = SimpleNamespace(superseded_at=None)
             response = InstancesViewset().task_status(request, task_id="fake-task")
 
         self.assertEqual(response.data["result"], {"status": "Nie udało się wykonać zadania."})

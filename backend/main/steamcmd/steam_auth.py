@@ -6,16 +6,22 @@ from struct import pack, unpack
 from ..utils.operation_logging import LogCallback
 from ..utils.steam_errors import SteamCommandError, SteamSecretRedactor, safe_steam_diagnostic
 
-def load_credentials() -> tuple[str, str]:
+def load_credentials(config_snapshot: dict | None = None) -> tuple[str, str]:
     """Loads Steam authentication credentials.
+
+    Args:
+        config_snapshot (dict, optional): One already-captured application
+            configuration snapshot. Defaults to a fresh snapshot.
 
     Returns:
         tuple[str, str]: A tuple containing the username and password.
     """
     from ..utils.config import config
 
-    username = config.get("steam_auth.username")
-    password = config.get("steam_auth.password")
+    snapshot = config_snapshot if config_snapshot is not None else config.snapshot()
+    steam_auth = snapshot.get("steam_auth", {})
+    username = steam_auth.get("username", "")
+    password = steam_auth.get("password", "")
     return username, password
 
 def generate_steam_guard_code(
