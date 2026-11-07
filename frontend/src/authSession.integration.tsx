@@ -38,13 +38,153 @@ interface FixtureState {
 	pending: PendingRequest[];
 	failNextIdentity: number;
 	delayedIdentityTokens: Set<string>;
+	instanceTasks: Record<string, SyntheticTask>;
+	nextInstanceTaskId: number;
+	lastCreatedTaskId: string | null;
+	failNextInstanceTaskId: string | null;
+	delayNextInstanceListMs: number;
+	failNextInstanceList: number;
 }
+
+interface SyntheticInstance {
+	id: number;
+	name: string;
+	user: { id: number; username: string; last_login: string };
+	preset: string;
+	log_file: string | null;
+	start_file_path: string;
+	port: string;
+	pid: number;
+	is_ready: boolean;
+	is_running: boolean;
+	is_admin_instance: boolean;
+	created_at: string;
+	lifecycle_state: "stopped" | "starting" | "running" | "stopping" | "unknown";
+	shutdown_at: string | null;
+	active_tasks: Partial<Record<"start" | "stop" | "download", string>>;
+}
+
+interface SyntheticTask {
+	instanceId: number;
+	kind: "start" | "stop" | "download";
+	responses: unknown[];
+	index: number;
+}
+
+const instanceScenarioEnabled =
+	new URLSearchParams(window.location.search).get("instances") === "1";
+
+type SyntheticInstanceInput =
+	Partial<Omit<SyntheticInstance, "id" | "name" | "user">> &
+	Pick<SyntheticInstance, "id" | "name"> & {
+		username: string;
+		lifecycle_state: SyntheticInstance["lifecycle_state"];
+	};
+
+function syntheticInstance(values: SyntheticInstanceInput): SyntheticInstance {
+	const {
+		id,
+		name,
+		username,
+		lifecycle_state: lifecycleState,
+		...instanceValues
+	} = values;
+	return {
+		id,
+		name,
+		user: {
+			id: id === 100 ? 1 : id,
+			username,
+			last_login: "2026-01-01T00:00:00Z",
+		},
+		preset: "fixture-preset.html",
+		log_file: "fixture.log",
+		start_file_path: "",
+		port: String(2300 + id),
+		pid: 0,
+		is_ready: true,
+		is_running: lifecycleState === "running",
+		is_admin_instance: id === 100,
+		created_at: "2026-01-01T00:00:00Z",
+		lifecycle_state: lifecycleState,
+		shutdown_at: null,
+		active_tasks: {},
+		...instanceValues,
+	};
+}
+
+const instanceFixture = {
+	admin_instances: [
+		syntheticInstance({
+			id: 100,
+			name: "fixture-main",
+			username: "admin",
+			lifecycle_state: "stopped",
+			shutdown_at: null,
+		}),
+	],
+	user_instances: [
+		syntheticInstance({
+			id: 1,
+			name: "fixture-owned-running",
+			username: "admin",
+			lifecycle_state: "running",
+			is_ready: false,
+			shutdown_at: "2031-01-02T10:00:00Z",
+		}),
+		syntheticInstance({
+			id: 2,
+			name: "fixture-owned-ready",
+			username: "admin",
+			lifecycle_state: "stopped",
+		}),
+		syntheticInstance({
+			id: 3,
+			name: "fixture-owned-recovered",
+			username: "admin",
+			lifecycle_state: "stopped",
+			active_tasks: { start: "task-recovered" },
+		}),
+	],
+	other_instances: [
+		syntheticInstance({
+			id: 4,
+			name: "fixture-other-running",
+			username: "alice",
+			lifecycle_state: "running",
+			shutdown_at: "2031-01-02T12:00:00Z",
+		}),
+		syntheticInstance({
+			id: 5,
+			name: "fixture-other-ready",
+			username: "bob",
+			lifecycle_state: "stopped",
+		}),
+	],
+};
 
 const fixtureState: FixtureState = {
 	requests: [],
 	pending: [],
 	failNextIdentity: 0,
 	delayedIdentityTokens: new Set(),
+	instanceTasks: {
+		"task-recovered": {
+			instanceId: 3,
+			kind: "start",
+			responses: [
+				{ state: "PENDING", result: null },
+				{ state: "PROGRESS", result: { status: "Recovered server task" } },
+				{ state: "SUCCESS", result: { status: "Recovered task complete" } },
+			],
+			index: 0,
+		},
+	},
+	nextInstanceTaskId: 1,
+	lastCreatedTaskId: null,
+	failNextInstanceTaskId: null,
+	delayNextInstanceListMs: 0,
+	failNextInstanceList: 0,
 };
 
 function notifyFixture(): void {
@@ -170,6 +310,143 @@ const syntheticAdapter: AxiosAdapter = (config) => {
 		return Promise.resolve(response(config, { message: "Synthetic logout succeeded" }));
 	}
 
+	if (instanceScenarioEnabled && url === "instances/" && config.method === "get") {
+		if (fixtureState.failNextInstanceList > 0) {
+			fixtureState.failNextInstanceList -= 1;
+			notifyFixture();
+			return Promise.reject(errorResponse(config, 503));
+		}
+		const delay = fixtureState.delayNextInstanceListMs;
+		fixtureState.delayNextInstanceListMs = 0;
+		if (delay > 0) {
+			return new Promise((resolve) => {
+				window.setTimeout(() => {
+					notifyFixture();
+					resolve(response(config, instanceFixture));
+				}, delay);
+			});
+		}
+		return Promise.resolve(response(config, instanceFixture));
+	}
+
+	if (instanceScenarioEnabled && config.method === "post") {
+		const actionMatch = url.match(
+			/^instances\/(\d+)\/(start|stop|download_mods)\/$/,
+		);
+		if (actionMatch) {
+			const instanceId = Number(actionMatch[1]);
+			const action = actionMatch[2];
+			const kind = action === "download_mods" ? "download" : action;
+			const instance = [
+				...instanceFixture.admin_instances,
+				...instanceFixture.user_instances,
+				...instanceFixture.other_instances,
+			].find((item) => item.id === instanceId);
+			if (!instance || (kind !== "start" && kind !== "stop" && kind !== "download")) {
+				return Promise.reject(errorResponse(config, 404));
+			}
+			const taskId = "fixture-task-" + fixtureState.nextInstanceTaskId;
+			fixtureState.nextInstanceTaskId += 1;
+			fixtureState.lastCreatedTaskId = taskId;
+			instance.active_tasks[kind] = taskId;
+			fixtureState.instanceTasks[taskId] = {
+				instanceId,
+				kind,
+				responses: [
+					{ state: "PENDING", result: null },
+					{ state: "PROGRESS", result: { status: "Fixture task in progress" } },
+					{ state: "SUCCESS", result: { status: "Fixture task complete" } },
+				],
+				index: 0,
+			};
+			notifyFixture();
+			return Promise.resolve(response(config, { task_id: taskId }, 202));
+		}
+
+	}
+
+	if (instanceScenarioEnabled && config.method === "get") {
+		const logMatch = url.match(/^instances\/(\d+)\/logs\/$/);
+		if (logMatch) {
+			return Promise.resolve(response(config, "Synthetic instance log output"));
+		}
+		const downloadLogMatch = url.match(/^instances\/(\d+)\/logs\/download\/$/);
+		if (downloadLogMatch) {
+			return Promise.resolve(response(config, "Synthetic instance log download"));
+		}
+	}
+
+	if (
+		instanceScenarioEnabled &&
+		config.method === "get" &&
+		url.startsWith("instances/task_status/")
+	) {
+		const taskId = url.match(/^instances\/task_status\/([^/]+)\/$/)?.[1];
+		const task = taskId ? fixtureState.instanceTasks[taskId] : undefined;
+		if (!taskId || !task) {
+			return Promise.reject(errorResponse(config, 404));
+		}
+		if (fixtureState.failNextInstanceTaskId === taskId) {
+			fixtureState.failNextInstanceTaskId = null;
+			notifyFixture();
+			return Promise.reject(errorResponse(config, 503));
+		}
+		const result = task.responses[Math.min(task.index, task.responses.length - 1)];
+		task.index += 1;
+		if (
+			typeof result === "object" &&
+				result !== null &&
+				"state" in result &&
+				typeof result.state === "string" &&
+				["SUCCESS", "FAILURE", "REVOKED"].includes(result.state)
+		) {
+			const instance = [
+				...instanceFixture.admin_instances,
+				...instanceFixture.user_instances,
+				...instanceFixture.other_instances,
+			].find((item) => item.id === task.instanceId);
+			if (instance?.active_tasks[task.kind] === taskId) {
+				delete instance.active_tasks[task.kind];
+			}
+			if (result.state === "SUCCESS") {
+				if (task.kind === "start") {
+					instance!.is_running = true;
+					instance!.lifecycle_state = "running";
+				} else if (task.kind === "stop") {
+					instance!.is_running = false;
+					instance!.lifecycle_state = "stopped";
+				} else {
+					instance!.is_ready = true;
+				}
+			}
+			notifyFixture();
+		}
+		return Promise.resolve(response(config, result));
+	}
+
+	if (instanceScenarioEnabled && config.method === "delete") {
+		const logDeleteMatch = url.match(/^instances\/(\d+)\/logs\/delete\/$/);
+		if (logDeleteMatch) {
+			return Promise.resolve(
+				response(config, { message: "Synthetic instance logs deleted" }),
+			);
+		}
+		const instanceMatch = url.match(/^instances\/(\d+)\/$/);
+		if (instanceMatch) {
+			const instanceId = Number(instanceMatch[1]);
+			instanceFixture.user_instances = instanceFixture.user_instances.filter(
+				(item) => item.id !== instanceId,
+			);
+			instanceFixture.other_instances = instanceFixture.other_instances.filter(
+				(item) => item.id !== instanceId,
+			);
+			notifyFixture();
+			return Promise.resolve(
+				response(config, { message: "Synthetic instance deleted" }),
+			);
+		}
+	}
+
 	if (url === "fixture/ordinary-401/") {
 		return new Promise((resolve, reject) => {
 			enqueuePending(config, "ordinary", token, resolve, reject);
@@ -178,7 +455,11 @@ const syntheticAdapter: AxiosAdapter = (config) => {
 
 	if (url === "instances/") {
 		return Promise.resolve(
-			response(config, { user_instances: [], admin_instances: [] }),
+			response(config, {
+				user_instances: [],
+				admin_instances: [],
+				other_instances: [],
+			}),
 		);
 	}
 
@@ -277,6 +558,43 @@ function FixtureControls() {
 				stored token {localStorage.getItem("Token") ?? "none"}; latest login Authorization{" "}
 				{lastLoginRequest?.authorizationPresent ? "present" : "omitted"}
 			</Typography>
+			{instanceScenarioEnabled && (
+				<>
+					<Typography variant="body2" data-testid="instance-fixture-stats">
+						Synthetic instance task polls: {fixtureState.requests.filter((request) =>
+							/^instances\/task_status\//.test(request.url),
+						).length}; latest task {fixtureState.lastCreatedTaskId ?? "none"}; next poll error {fixtureState.failNextInstanceTaskId ?? "none"}; synthetic list requests {fixtureState.requests.filter((request) => request.url === "instances/").length}; next list delay {fixtureState.delayNextInstanceListMs} ms; next list failures {fixtureState.failNextInstanceList}
+					</Typography>
+					<Button
+						size="small"
+						disabled={!fixtureState.lastCreatedTaskId}
+						onClick={() => {
+							fixtureState.failNextInstanceTaskId = fixtureState.lastCreatedTaskId;
+							notifyFixture();
+						}}
+					>
+						Fail next poll for latest instance task
+					</Button>
+					<Button
+						size="small"
+						onClick={() => {
+							fixtureState.delayNextInstanceListMs = 6000;
+							notifyFixture();
+						}}
+					>
+						Delay next instance list by 6 seconds
+					</Button>
+					<Button
+						size="small"
+						onClick={() => {
+							fixtureState.failNextInstanceList += 1;
+							notifyFixture();
+						}}
+					>
+						Fail next instance list (503)
+					</Button>
+				</>
+			)}
 			<Stack direction="row" flexWrap="wrap" gap={0.5} sx={{ mt: 1 }}>
 				<Button size="small" onClick={() => settlePending("identity", "resolve")}>
 					Release pending identity
