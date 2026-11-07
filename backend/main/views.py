@@ -422,8 +422,11 @@ class InstancesViewset(viewsets.ModelViewSet):
                 file_path=instance.preset.path,
                 mods_directory=config.get("paths.mods_directory")
             )
-        except Exception as e:
-            return Response({"message": f"Nie udało się rozpocząć zadania pobierania: {str(e)}"}, status=500)
+        except Exception:
+            return Response(
+                {"message": "Nie udało się rozpocząć zadania pobierania."},
+                status=500,
+            )
         return Response({'task_id': task.id}, status=202)
 
     @action(detail=False, methods=['get'], url_path='task_status/(?P<task_id>[^/.]+)')
@@ -434,8 +437,11 @@ class InstancesViewset(viewsets.ModelViewSet):
             return Response({"message": "Zadanie nie zostało znalezione"}, status=404)
 
         res = task_result.result
-        if isinstance(res, Exception):
-            res = {"status": str(res)}
+        if isinstance(res, Exception) or task_result.status == "FAILURE":
+            # Older failures and generic exceptions may contain command arguments.
+            # Keep the existing shape with an allowlisted message independent of
+            # the exception or result value provided by the backend.
+            res = {"status": "Nie udało się wykonać zadania."}
             
         result = {
             "id": task_id,

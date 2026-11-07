@@ -6,6 +6,11 @@ from typing import Callable
 from ..utils.process_output import stream_process_output
 from ..utils.config import config
 from ..utils.operation_logging import LogCallback
+from ..utils.steam_errors import (
+    SteamCommandError,
+    SteamSecretRedactor,
+    safe_steam_diagnostic,
+)
 from ..workaround.cache_deletion import delete_steamcmd_appcache
 from ..workaround.ghost_folder import GhostFolder
 from ..workaround.modsrenamer import lowercase_addons_directory
@@ -17,7 +22,12 @@ def assign_new_steamguard(
     buffer_seconds: int = 7,
     log_callback: LogCallback | None = None,
     error_callback: LogCallback | None = None,
+    secret_redactor: SteamSecretRedactor | None = None,
 ) -> str:
+    redactor = secret_redactor or SteamSecretRedactor.from_config()
+    safe_log_callback = redactor.callback(log_callback)
+    safe_error_callback = redactor.callback(error_callback)
+
     def _get_time_until_next_steamguard_change() -> float:
         """Get the time in seconds until the next Steam Guard code change.
 
@@ -33,17 +43,18 @@ def assign_new_steamguard(
         """
         return generate_steam_guard_code(
             config.get("steam_auth.shared_secret", ""),
-            error_callback=error_callback,
+            error_callback=safe_error_callback,
         )
 
     # Generate a new Steam Guard code, ensuring it's different from the previous one
     for _ in range(10):  # Retry up to 10 times
         new_code = _new_steamguard_code()
         if new_code != steamguard or new_code == "":
+            redactor.add_secret(new_code)
             return new_code
         time_until_change = _get_time_until_next_steamguard_change() + buffer_seconds
-        if log_callback:
-            log_callback(f"Waiting {time_until_change:.1f}s to generate new Steam Guard code...")
+        if safe_log_callback:
+            safe_log_callback(f"Waiting {time_until_change:.1f}s to generate new Steam Guard code...")
         sleep(time_until_change)
     return ""
 
@@ -54,6 +65,7 @@ def download_mods(
     error_callback: LogCallback | None = None,
     lim: int = 10,
     progress_callback: Callable[[int, int], None] | None = None,
+    secret_redactor: SteamSecretRedactor | None = None,
 ) -> list[str] | None:
     """Downloads mods using SteamCMD.
 
@@ -81,19 +93,33 @@ def download_mods(
     
     
     login, password = load_credentials()
+    redactor = secret_redactor or SteamSecretRedactor.from_config()
+    redactor.add_secret(login)
+    redactor.add_secret(password)
+    safe_log_callback = redactor.callback(log_callback)
+    safe_error_callback = redactor.callback(error_callback)
     steamguard = assign_new_steamguard(
         steamguard=steamguard,
-        log_callback=log_callback,
-        error_callback=error_callback,
+        log_callback=safe_log_callback,
+        error_callback=safe_error_callback,
+        secret_redactor=redactor,
     )
-    if log_callback:
-        log_callback('Loaded login credentials.')
+    redactor.add_secret(steamguard)
+    if safe_log_callback:
+        safe_log_callback('Loaded login credentials.')
     
-    delete_steamcmd_appcache(steamcmd_dir, log_callback)
+    delete_steamcmd_appcache(steamcmd_dir, safe_log_callback)
 
-    ghost_folder = GhostFolder(name=name, path=download_dir, log_callback=log_callback)
+    ghost_folder = GhostFolder(name=name, path=download_dir, log_callback=safe_log_callback)
     
-    if not test_connection(steamcmd_dir, login, password, steamguard):
+    if not test_connection(
+        steamcmd_dir,
+        login,
+        password,
+        steamguard,
+        safe_log_callback,
+        secret_redactor=redactor,
+    ):
         raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
 
     if progress_callback:
@@ -105,9 +131,11 @@ def download_mods(
 
         steamguard = assign_new_steamguard(
             steamguard=steamguard,
-            log_callback=log_callback,
-            error_callback=error_callback,
+            log_callback=safe_log_callback,
+            error_callback=safe_error_callback,
+            secret_redactor=redactor,
         )
+        redactor.add_secret(steamguard)
 
         return_code = steamcmd_download(
             mod=batch,
@@ -117,7 +145,8 @@ def download_mods(
             steamcmd_dir=steamcmd_dir,
             ghost_folder_path=ghost_folder.ghost_folder_path,
             steamguard=steamguard,
-            log_callback=log_callback,
+            log_callback=safe_log_callback,
+            secret_redactor=redactor,
         )
 
         if return_code == 84:
@@ -128,9 +157,11 @@ def download_mods(
         elif return_code != 0:
             steamguard = assign_new_steamguard(
                 steamguard=steamguard,
-                log_callback=log_callback,
-                error_callback=error_callback,
+                log_callback=safe_log_callback,
+                error_callback=safe_error_callback,
+                secret_redactor=redactor,
             )
+            redactor.add_secret(steamguard)
             for mod in batch:
                 if download_fallback(
                     mod,
@@ -140,14 +171,15 @@ def download_mods(
                     steamcmd_dir,
                     ghost_folder.ghost_folder_path,
                     steamguard,
-                    log_callback=log_callback,
-                    error_callback=error_callback,
+                    log_callback=safe_log_callback,
+                    error_callback=safe_error_callback,
+                    secret_redactor=redactor,
                 ):
                     failed_mods.append(mod)
-                    if error_callback:
-                        error_callback(f"Failed to download mod {mod}.")
-                    elif log_callback:
-                        log_callback(f"Failed to download mod {mod}.")
+                    if safe_error_callback:
+                        safe_error_callback(f"Failed to download mod {mod}.")
+                    elif safe_log_callback:
+                        safe_log_callback(f"Failed to download mod {mod}.")
         if progress_callback:
             progress_callback(min((i + 1) * lim, len(mods_to_download)), len(mods_to_download))
 
@@ -155,19 +187,19 @@ def download_mods(
         lowercase_addons_directory(
             wid,
             os.path.join(ghost_folder.ghost_folder_path, "steamapps/workshop/content/107410"),
-            log_callback=log_callback,
+            log_callback=safe_log_callback,
         )
     ghost_folder.move_files(destination_path=mods_dir, internal_path="steamapps/workshop/content/107410")
     ghost_folder.cleanup()
     
     if failed_mods:
-        if error_callback:
-            error_callback(f"Errors occurred during mod downloads: {failed_mods}")
-        elif log_callback:
-            log_callback(f"Errors occurred during mod downloads: {failed_mods}")
+        if safe_error_callback:
+            safe_error_callback(f"Errors occurred during mod downloads: {failed_mods}")
+        elif safe_log_callback:
+            safe_log_callback(f"Errors occurred during mod downloads: {failed_mods}")
         return failed_mods
-    if log_callback:
-        log_callback("All mods downloaded successfully.")
+    if safe_log_callback:
+        safe_log_callback("All mods downloaded successfully.")
     return None
 
 def steamcmd_download(
@@ -180,6 +212,7 @@ def steamcmd_download(
     steamguard: str | None = None,
     log_callback: LogCallback | None = None,
     is_retry: bool = False,
+    secret_redactor: SteamSecretRedactor | None = None,
 ) -> int:
     """Download a mod using SteamCMD.
 
@@ -214,9 +247,50 @@ def steamcmd_download(
             args.append(f'+workshop_download_item {appid} {int(mod)}')
     args.append("+quit")
 
-    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    redactor = secret_redactor or SteamSecretRedactor.from_config()
+    redactor.add_secret(login)
+    redactor.add_secret(password)
+    redactor.add_secret(steamguard)
+    safe_log_callback = redactor.callback(log_callback)
+
+    error: SteamCommandError | None = None
+    diagnostic = ""
+    try:
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except Exception as exc:
+        diagnostic = safe_steam_diagnostic(exc, redactor)
+        error = SteamCommandError(
+            "Nie udało się uruchomić SteamCMD. Sprawdź logi operacji.",
+            diagnostic=diagnostic,
+        )
+    if error is not None:
+        if safe_log_callback and diagnostic:
+            safe_log_callback(f"SteamCMD error: {diagnostic}")
+        raise error from None
     
-    stream_process_output(process, log_callback if log_callback else None)
+    error = None
+    try:
+        stream_process_output(
+            process,
+            safe_log_callback,
+            secret_redactor=redactor,
+        )
+    except SteamCommandError as exc:
+        diagnostic = safe_steam_diagnostic(exc, redactor)
+        error = SteamCommandError(
+            "Nie udało się odczytać wyjścia SteamCMD.",
+            diagnostic=diagnostic,
+        )
+    except Exception as exc:
+        diagnostic = safe_steam_diagnostic(exc, redactor)
+        error = SteamCommandError(
+            "Nie udało się odczytać wyjścia SteamCMD.",
+            diagnostic=diagnostic,
+        )
+    if error is not None:
+        if safe_log_callback and diagnostic:
+            safe_log_callback(f"SteamCMD error: {diagnostic}")
+        raise error from None
     
     return process.returncode
 
@@ -230,6 +304,7 @@ def download_fallback(
     steamguard: str | None = None,
     log_callback: LogCallback | None = None,
     error_callback: LogCallback | None = None,
+    secret_redactor: SteamSecretRedactor | None = None,
 ) -> str | None:
     """Attempt to download failed mod again.
 
@@ -247,24 +322,51 @@ def download_fallback(
         Returns:
             str | None: The workshop ID of the mod if the download fails again, otherwise None.
     """
+    redactor = secret_redactor or SteamSecretRedactor.from_config()
+    redactor.add_secret(login)
+    redactor.add_secret(password)
+    redactor.add_secret(steamguard)
+    safe_log_callback = redactor.callback(log_callback)
+    safe_error_callback = redactor.callback(error_callback)
+
     stop_time = time() + 7200  # 120 minutes timeout
     while time() < stop_time:
-        if log_callback:
-            log_callback(f"Retrying download for mod {mod}...")
+        if safe_log_callback:
+            safe_log_callback(f"Retrying download for mod {mod}...")
         sleep(60)
         steamguard = assign_new_steamguard(
             steamguard=steamguard,
-            log_callback=log_callback,
-            error_callback=error_callback,
+            log_callback=safe_log_callback,
+            error_callback=safe_error_callback,
+            secret_redactor=redactor,
         )
-        return_code = steamcmd_download(mod=mod, appid=appid, login=login, password=password, steamcmd_dir=steamcmd_dir, ghost_folder_path=ghost_folder_path, steamguard=steamguard, log_callback=log_callback, is_retry=True)
+        redactor.add_secret(steamguard)
+        return_code = steamcmd_download(
+            mod=mod,
+            appid=appid,
+            login=login,
+            password=password,
+            steamcmd_dir=steamcmd_dir,
+            ghost_folder_path=ghost_folder_path,
+            steamguard=steamguard,
+            log_callback=safe_log_callback,
+            is_retry=True,
+            secret_redactor=redactor,
+        )
         if return_code == 0:
-            if log_callback:
-                log_callback(f"Successfully downloaded mod {mod} after retry.")
+            if safe_log_callback:
+                safe_log_callback(f"Successfully downloaded mod {mod} after retry.")
             return None
     return mod
 
-def test_connection(steamcmd_dir: str, login: str, password: str, steamguard: str = None) -> bool:
+def test_connection(
+    steamcmd_dir: str,
+    login: str,
+    password: str,
+    steamguard: str = None,
+    log_callback: LogCallback | None = None,
+    secret_redactor: SteamSecretRedactor | None = None,
+) -> bool:
     """Test connection to SteamCMD.
 
     Args:
@@ -276,14 +378,32 @@ def test_connection(steamcmd_dir: str, login: str, password: str, steamguard: st
     Returns:
         bool: True if the connection is successful, False otherwise.
     """
+    redactor = secret_redactor or SteamSecretRedactor.from_config()
+    redactor.add_secret(login)
+    redactor.add_secret(password)
+    redactor.add_secret(steamguard)
+    safe_log_callback = redactor.callback(log_callback)
+
     args = ['bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}']
     if steamguard:
         args.append(f'+set_steam_guard_code {steamguard}')
     args.append(f'+login {login} {password}')
     args.append("+quit")
 
-    process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    
-    process.wait(timeout=10)
+    error: SteamCommandError | None = None
+    diagnostic = ""
+    try:
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process.wait(timeout=10)
+    except Exception as exc:
+        diagnostic = safe_steam_diagnostic(exc, redactor)
+        error = SteamCommandError(
+            "Nie udało się połączyć z SteamCMD. Sprawdź logi operacji.",
+            diagnostic=diagnostic,
+        )
+    if error is not None:
+        if safe_log_callback and diagnostic:
+            safe_log_callback(f"SteamCMD connection error: {diagnostic}")
+        raise error from None
     
     return process.returncode == 0

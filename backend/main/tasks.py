@@ -8,6 +8,7 @@ from .modpreset.modpathing import check_installed
 from .serverhandling.start_server import start_server
 from .utils.config import config
 from .utils.operation_logging import operation_loggers
+from .utils.steam_errors import SteamCommandError, SteamSecretRedactor, safe_steam_diagnostic
 import psutil
 from django.core.cache import cache
 from servermanager.celery import app as celery_app
@@ -36,6 +37,7 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
             return {'status': 'Pobieranie jest już w toku.', 'task_id': existing_task_id}
 
     cache.set(cache_key, self.request.id, timeout=14400)  # Timeout set to 4 hours
+    secret_redactor = SteamSecretRedactor.from_config()
 
     try:
         self.update_state(state='PROGRESS', meta={'status': 'Rozpoczynanie pobierania...'})
@@ -45,6 +47,7 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
             user,
             ("operations", "download"),
             grouped=True,
+            secret_redactor=secret_redactor,
         ) as loggers:
             operations_logger = loggers["operations"]
             download_logger = loggers["download"]
@@ -79,6 +82,7 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
                         log_callback=download_logger.info,
                         error_callback=download_error_callback,
                         progress_callback=progress_callback,
+                        secret_redactor=secret_redactor,
                     )
 
                     if failed_mods:
@@ -89,15 +93,24 @@ def download_mods_task(self, instance_id: int, name: str, user: str, file_path: 
                 instance.save()
 
                 self.update_state(state='SUCCESS', meta={'status': 'Pobieranie zakończone pomyślnie!'})
-            except Exception:
+            except Exception as exc:
+                diagnostic = safe_steam_diagnostic(exc, secret_redactor)
+                if diagnostic:
+                    download_logger.error("Steam download diagnostic: %s", diagnostic)
                 download_logger.exception("Mod download task failed.")
-                raise
+                raise SteamCommandError(
+                    "Nie udało się pobrać modów. Sprawdź logi operacji.",
+                    diagnostic=diagnostic,
+                ) from None
 
         cache.delete(cache_key)
         return {'status': 'Pobieranie zakończone pomyślnie!'}
-    except Exception:
+    except Exception as exc:
         cache.delete(cache_key)
-        raise
+        raise SteamCommandError(
+            "Nie udało się pobrać modów. Sprawdź logi operacji.",
+            diagnostic=safe_steam_diagnostic(exc, secret_redactor),
+        ) from None
     
 @shared_task(bind=True)
 def start_server_task(self, instance_id: int, arma3_dir: str) -> dict:

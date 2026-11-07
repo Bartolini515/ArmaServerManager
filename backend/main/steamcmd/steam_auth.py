@@ -4,6 +4,7 @@ import hashlib
 import base64
 from struct import pack, unpack
 from ..utils.operation_logging import LogCallback
+from ..utils.steam_errors import SteamCommandError, SteamSecretRedactor, safe_steam_diagnostic
 
 def load_credentials() -> tuple[str, str]:
     """Loads Steam authentication credentials.
@@ -34,6 +35,9 @@ def generate_steam_guard_code(
     if not shared_secret:
         return ""
 
+    redactor = SteamSecretRedactor((shared_secret,))
+
+    error_message: str | None = None
     try:
         # Decode the shared secret from Base64
         secret_bytes = base64.b64decode(shared_secret)
@@ -61,7 +65,17 @@ def generate_steam_guard_code(
             full_code //= len(steam_guard_chars)
 
         return code
-    except Exception as e:
-        if error_callback:
-            error_callback(f"Failed to generate Steam Guard code: {e}")
-        return ""
+    except Exception:
+        # Keep the message useful without serializing exception details that
+        # could contain the shared secret.
+        error_message = "Failed to generate Steam Guard code."
+
+    if error_callback and error_message is not None:
+        try:
+            error_callback(error_message)
+        except Exception as exc:
+            raise SteamCommandError(
+                "Nie udało się zapisać informacji o Steam Guard.",
+                diagnostic=safe_steam_diagnostic(exc, redactor),
+            ) from None
+    return ""
