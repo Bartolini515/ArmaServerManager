@@ -4,7 +4,13 @@ import threading
 from ..utils.process_output import stream_process_output
 
 
-def start_server(arma3_dir: str, start_file_path: str, log_file_path: str) -> subprocess.Popen:
+def start_server(
+    arma3_dir: str,
+    start_file_path: str,
+    log_file_path: str,
+    *,
+    run_id: str | None = None,
+) -> subprocess.Popen:
     """
     Start an Arma 3 server instance and log its output.
     
@@ -18,15 +24,22 @@ def start_server(arma3_dir: str, start_file_path: str, log_file_path: str) -> su
     """
     args = [start_file_path]
 
-    process = subprocess.Popen(
-        args, 
-        stdout=subprocess.PIPE, 
-        stderr=subprocess.PIPE,
-        cwd=arma3_dir,  # Set working directory to Arma 3 directory
-        text=True,
-        bufsize=1,
-        universal_newlines=True,
-    )
+    popen_options = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "cwd": arma3_dir,
+        "text": True,
+        "bufsize": 1,
+        "universal_newlines": True,
+    }
+    if run_id is not None:
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError("run_id must be non-empty")
+        child_environment = os.environ.copy()
+        child_environment["ASM_INSTANCE_RUN_ID"] = run_id
+        popen_options["env"] = child_environment
+
+    process = subprocess.Popen(args, **popen_options)
     
     def active_log_callback(line: str) -> None:
             try:
