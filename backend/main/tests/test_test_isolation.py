@@ -21,7 +21,10 @@ class TestIsolationTests(SimpleTestCase):
 
         self.assertEqual(settings.SETTINGS_MODULE, "testsupport.settings")
         self.assertEqual(settings.DATABASES["default"]["ENGINE"], "django.db.backends.sqlite3")
-        self.assertEqual(settings.DATABASES["default"]["NAME"], ":memory:")
+        self.assertIn(
+            settings.DATABASES["default"]["NAME"],
+            {":memory:", "file:memorydb_default?mode=memory&cache=shared"},
+        )
         self.assertEqual(
             settings.CACHES["default"]["BACKEND"],
             "django.core.cache.backends.locmem.LocMemCache",
