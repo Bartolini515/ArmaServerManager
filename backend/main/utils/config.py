@@ -95,4 +95,4 @@ class Config:
         self._load()
             
 # Create a single instance of Config to be used throughout the application
-config = Config('../../data/config.json')
+config = Config(os.environ.get("ASM_CONFIG_PATH", '../../data/config.json'))
