@@ -4,6 +4,21 @@ from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.base_user import BaseUserManager
 
 
+def _single_delete_result(instance, result):
+    cleanup_pending = result.cleanup_pending
+    instance._asm_cleanup_pending = (
+        None
+        if cleanup_pending is None
+        else {
+            "pending": True,
+            "reason": cleanup_pending.reason,
+            "pending_count": cleanup_pending.pending_count,
+        }
+    )
+    instance.pk = None
+    return result.delete_result
+
+
 class InstanceLifecycleLock(models.Model):
     """One database row serializes lifecycle admission across all instances."""
 
@@ -39,11 +54,20 @@ class Profile(AbstractUser):
     def __str__(self):
         return self.username
     
-    def delete(self, *args, **kwargs):
-        """Remove the profile and its generated server configuration file."""
-        if self.server_config and os.path.exists(self.server_config):
-            os.remove(self.server_config)
-        super().delete(*args, **kwargs)
+    def delete(self, using=None, keep_parents=False):
+        """Delete one profile through the lifecycle-locked managed-file service."""
+        from .instance_management import delete_profile
+        from .instance_lifecycle import require_lifecycle_autocommit
+        from .utils.config import config
+
+        require_lifecycle_autocommit()
+        result = delete_profile(
+            profile_id=self.pk,
+            config_snapshot=config.snapshot(),
+            using=using,
+            keep_parents=keep_parents,
+        )
+        return _single_delete_result(self, result)
         
 
 def user_presets_directory_path(instance, filename):
@@ -87,18 +111,20 @@ class Instances(models.Model):
     def __str__(self):
         return self.name
     
-    def delete(self, *args, **kwargs):
-        """Delete instance-owned files and release its reserved port before removal."""
-        if self.preset and os.path.exists(self.preset.path):
-            os.remove(self.preset.path)
-        if self.log_file and os.path.exists(self.log_file.path):
-            os.remove(self.log_file.path)
-        if self.start_file_path and os.path.exists(self.start_file_path):
-            os.remove(self.start_file_path)
-        if self.port:
-            self.port.is_available = True
-            self.port.save()
-        super().delete(*args, **kwargs)
+    def delete(self, using=None, keep_parents=False):
+        """Delete one instance through the lifecycle-locked managed-file service."""
+        from .instance_management import delete_instance
+        from .instance_lifecycle import require_lifecycle_autocommit
+        from .utils.config import config
+
+        require_lifecycle_autocommit()
+        result = delete_instance(
+            instance_id=self.pk,
+            config_snapshot=config.snapshot(),
+            using=using,
+            keep_parents=keep_parents,
+        )
+        return _single_delete_result(self, result)
 
 
 class InstanceTask(models.Model):

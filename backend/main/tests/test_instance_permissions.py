@@ -1,12 +1,15 @@
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import sys
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
 from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 
 from main.instance_tasks import create_instance_task_binding
@@ -30,6 +33,39 @@ def storage_path_override(log_file_name, on_log_file_path):
 
 class InstancePermissionTests(TransactionTestCase):
     def setUp(self):
+        self.temp = TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.test_root = Path(self.temp.name)
+        self.media_root = self.test_root / "media"
+        self.arma_root = self.test_root / "arma3"
+        self.private_root = self.test_root / ".asm-private"
+        self.static_root = self.test_root / "static"
+        for path in (self.media_root, self.arma_root, self.private_root, self.static_root):
+            path.mkdir(parents=True)
+        self.settings_override = override_settings(
+            MEDIA_ROOT=str(self.media_root),
+            STATIC_ROOT=str(self.static_root),
+        )
+        self.settings_override.enable()
+        self.addCleanup(self.settings_override.disable)
+        self.config_snapshot = {
+            "paths": {
+                "arma3": str(self.arma_root),
+                "mods_directory": str(self.arma_root / "mods"),
+                "logs_directory": str(self.test_root / "operation-logs"),
+                "download_directory": str(self.test_root / "downloads"),
+                "steamcmd": "",
+            },
+            "steam_auth": {"username": "", "password": "", "shared_secret": ""},
+        }
+        (self.arma_root / "arma3server_x64").write_bytes(b"invented executable placeholder")
+        self.snapshot_patcher = patch(
+            "main.views.config.snapshot",
+            return_value=self.config_snapshot,
+        )
+        self.snapshot_patcher.start()
+        self.addCleanup(self.snapshot_patcher.stop)
+
         self.owner = User.objects.create_user(username="owner", password="test-password")
         self.other = User.objects.create_user(username="other", password="test-password")
         self.staff = User.objects.create_user(
@@ -70,7 +106,7 @@ class InstancePermissionTests(TransactionTestCase):
             process_created_at=(100.5 if is_running else None),
             process_executable=("/isolated/arma3/arma3server_x64" if is_running else None),
             pid=(12345 if is_running else None),
-            start_file_path=f"/isolated/arma3/start-{name}.sh",
+            start_file_path=str(self.write_start_file(name)),
         )
         if with_log:
             instance.log_file.save(
@@ -79,6 +115,26 @@ class InstancePermissionTests(TransactionTestCase):
                 save=True,
             )
         return instance
+
+    def write_start_file(self, name):
+        path = self.arma_root / f"start{name}.sh"
+        path.write_text("invented managed start script\n", encoding="utf-8")
+        return path
+
+    def parser_context(self, return_value=None):
+        stack = ExitStack()
+        parser_patches = [
+            stack.enter_context(patch("main.views.preset_parser", return_value=return_value))
+        ]
+        service_module = sys.modules.get("main.instance_management")
+        if service_module is not None and hasattr(service_module, "preset_parser"):
+            parser_patches.append(
+                stack.enter_context(
+                    patch.object(service_module, "preset_parser", return_value=return_value)
+                )
+            )
+        stack.parser_patches = parser_patches
+        return stack
 
     def authenticate_as(self, user):
         self.client.force_authenticate(user=user)
@@ -205,7 +261,7 @@ class InstancePermissionTests(TransactionTestCase):
             patch("main.views.preset_parser", return_value=[]),
             patch("main.views.check_installed", return_value=([], [])),
             patch("main.views.check_sh_file_exists", return_value=True),
-            patch("main.views.config.get", return_value="/isolated/arma3"),
+            patch("main.views.config.get", return_value=str(self.arma_root)),
             patch("main.views.dispatch_instance_task", return_value="start-task-id") as dispatch,
         ):
             start_response = self.client.post(
@@ -220,7 +276,7 @@ class InstancePermissionTests(TransactionTestCase):
         self.assertEqual(task, start_server_task)
         self.assertEqual(
             {key: value for key, value in kwargs.items() if key != "run_id"},
-            {"instance_id": instance.pk, "arma3_dir": "/isolated/arma3"},
+            {"instance_id": instance.pk, "arma3_dir": str(self.arma_root)},
         )
 
         instance.is_running = True
@@ -252,7 +308,7 @@ class InstancePermissionTests(TransactionTestCase):
             patch("main.views.preset_parser", return_value=[]),
             patch("main.views.check_installed", return_value=([], [])),
             patch("main.views.check_sh_file_exists", return_value=True) as check_script,
-            patch("main.views.config.get", return_value="/isolated/arma3"),
+            patch("main.views.config.get", return_value=str(self.arma_root)),
             patch(
                 "main.views.dispatch_instance_task",
                 return_value="unexpected-task-id",
@@ -267,10 +323,11 @@ class InstancePermissionTests(TransactionTestCase):
             response.data["message"],
             "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem",
         )
-        check_script.assert_called_once()
+        check_script.assert_not_called()
         dispatch.assert_not_called()
         instance.refresh_from_db()
         self.assertEqual(instance.lifecycle_state, Instances.LifecycleState.STOPPED)
+        self.assertFalse(instance.log_file)
         self.assertIsNone(instance.run_id)
         self.assertIsNone(instance.process_executable)
         self.assertFalse(InstanceTask.objects.filter(instance=instance).exists())
@@ -303,7 +360,7 @@ class InstancePermissionTests(TransactionTestCase):
             patch("main.views.preset_parser", return_value=[]),
             patch("main.views.check_installed", return_value=([], [])),
             patch("main.views.check_sh_file_exists", return_value=True),
-            patch("main.views.config.get", return_value="/isolated/arma3"),
+            patch("main.views.config.get", return_value=str(self.arma_root)),
             patch(
                 "main.views.dispatch_instance_task",
                 return_value="unexpected-task-id",
@@ -342,7 +399,7 @@ class InstancePermissionTests(TransactionTestCase):
             patch("main.views.preset_parser", return_value=[]),
             patch("main.views.check_installed", return_value=([], [])),
             patch("main.views.check_sh_file_exists", return_value=True),
-            patch("main.views.config.get", return_value="/isolated/arma3"),
+            patch("main.views.config.get", return_value=str(self.arma_root)),
             patch("main.views.dispatch_instance_task", return_value="should-not-queue") as dispatch,
         ):
             rejected = self.client.post(
@@ -386,11 +443,9 @@ class InstancePermissionTests(TransactionTestCase):
 
         self.authenticate_as(self.staff)
         with (
-            patch("main.views.preset_parser", return_value=[]),
-            patch("main.views.generate_sh_file", return_value="/isolated/generated-start.sh"),
-            patch("main.views.config.get", return_value="/isolated/mods"),
+            self.parser_context(return_value=[]),
+            patch("main.views.config.get", return_value=str(self.arma_root / "mods")),
             patch("main.views.operation_loggers") as operation_loggers,
-            patch("main.views.os.path.exists", return_value=False),
         ):
             operation_loggers.return_value.__enter__.return_value = {
                 "change_preset": MagicMock()
@@ -472,10 +527,8 @@ class InstancePermissionTests(TransactionTestCase):
         }
 
         with (
-            patch("main.views.preset_parser", return_value=[]),
-            patch("main.views.generate_server_config", return_value="/isolated/server.cfg"),
-            patch("main.views.generate_sh_file", return_value="/isolated/generated-start.sh"),
-            patch("main.views.config.get", return_value="/isolated/path"),
+            self.parser_context(return_value=[]),
+            patch("main.views.config.get", return_value=str(self.arma_root)),
             patch("main.views.operation_loggers", side_effect=fake_operation_loggers),
         ):
             response = self.client.post("/api/instances/", payload, format="multipart")
@@ -491,6 +544,9 @@ class InstancePermissionTests(TransactionTestCase):
         self.assertEqual(instance.lifecycle_state, "stopped")
         self.assertIsNone(instance.shutdown_at)
         self.assertFalse(instance.log_file)
-        self.assertEqual(instance.start_file_path, "/isolated/generated-start.sh")
+        self.assertEqual(
+            instance.start_file_path,
+            str(self.arma_root / "startsafe-created.sh"),
+        )
         self.assertEqual(response.data["result"]["user"]["username"], "owner")
         self.assertEqual(response.data["result"]["port"], str(available_port.port_number))

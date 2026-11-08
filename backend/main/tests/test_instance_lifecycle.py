@@ -1,5 +1,7 @@
 from contextlib import ExitStack, contextmanager
 from datetime import timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
@@ -9,7 +11,7 @@ from django.contrib.auth import get_user_model
 from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import transaction
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -51,6 +53,39 @@ class InstanceLifecycleTests(TransactionTestCase):
     reset_sequences = True
 
     def setUp(self):
+        self.temp = TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.test_root = Path(self.temp.name)
+        self.media_root = self.test_root / "media"
+        self.arma_root = self.test_root / "arma3"
+        self.private_root = self.test_root / ".asm-private"
+        self.static_root = self.test_root / "static"
+        for path in (self.media_root, self.arma_root, self.private_root, self.static_root):
+            path.mkdir(parents=True)
+        self.settings_override = override_settings(
+            MEDIA_ROOT=str(self.media_root),
+            STATIC_ROOT=str(self.static_root),
+        )
+        self.settings_override.enable()
+        self.addCleanup(self.settings_override.disable)
+        self.config_snapshot = {
+            "paths": {
+                "arma3": str(self.arma_root),
+                "mods_directory": str(self.arma_root / "mods"),
+                "logs_directory": str(self.test_root / "operation-logs"),
+                "download_directory": str(self.test_root / "downloads"),
+                "steamcmd": "",
+            },
+            "steam_auth": {"username": "", "password": "", "shared_secret": ""},
+        }
+        (self.arma_root / "arma3server_x64").write_bytes(b"invented executable placeholder")
+        self.snapshot_patcher = patch(
+            "main.views.config.snapshot",
+            return_value=self.config_snapshot,
+        )
+        self.snapshot_patcher.start()
+        self.addCleanup(self.snapshot_patcher.stop)
+
         self.owner = User.objects.create_user(username="owner", password="test-password")
         self.other = User.objects.create_user(username="other", password="test-password")
         self.staff = User.objects.create_user(
@@ -75,6 +110,8 @@ class InstanceLifecycleTests(TransactionTestCase):
         name = name or f"lifecycle-{self.next_port}"
         port = Ports.objects.create(port_number=self.next_port, is_available=False)
         self.next_port += 1
+        start_path = self.test_root / "arma3" / f"start{name}.sh"
+        start_path.write_text("invented managed start script\n", encoding="utf-8")
         instance = Instances.objects.create(
             name=name,
             user=owner,
@@ -82,7 +119,7 @@ class InstanceLifecycleTests(TransactionTestCase):
             port=port,
             lifecycle_state=state,
             is_admin_instance=is_admin_instance,
-            start_file_path=f"/isolated/arma3/start-{name}.sh",
+            start_file_path=str(start_path),
         )
         if with_log:
             instance.log_file.save(
@@ -109,7 +146,7 @@ class InstanceLifecycleTests(TransactionTestCase):
             patch("main.views.preset_parser", return_value=[]),
             patch("main.views.check_installed", return_value=([], [])),
             patch("main.views.check_sh_file_exists", return_value=True),
-            patch("main.views.config.get", return_value="/isolated/arma3"),
+            patch("main.views.config.get", return_value=str(self.arma_root)),
         )
 
     @contextmanager
@@ -184,7 +221,7 @@ class InstanceLifecycleTests(TransactionTestCase):
         self.assertEqual(task, start_server_task)
         self.assertEqual(binding.kind, InstanceTask.Kind.START)
         self.assertEqual(kwargs["instance_id"], instance.pk)
-        self.assertEqual(kwargs["arma3_dir"], "/isolated/arma3")
+        self.assertEqual(kwargs["arma3_dir"], str(self.arma_root))
         self.assertEqual(kwargs["run_id"], str(Instances.objects.get(pk=instance.pk).run_id))
 
         instance.refresh_from_db()

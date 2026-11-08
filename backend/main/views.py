@@ -1,9 +1,11 @@
+from contextlib import ExitStack
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from django.db.models import Q
 import os
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
+from rest_framework.exceptions import APIException
 from .serializers import *
 from rest_framework.response import Response
 from .models import *
@@ -13,7 +15,7 @@ from django.core.files.base import ContentFile
 from knox.models import AuthToken
 import psutil
 import platform
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from uuid import uuid4
 from .modpreset.modpathing import check_installed
 from .modpreset.preset_extraction import preset_parser
@@ -31,6 +33,36 @@ from .instance_lifecycle import (
     lifecycle_transaction,
     require_lifecycle_autocommit,
     reserve_stop,
+)
+from .instance_files import (
+    ManagedFileError,
+    ManagedFileRollbackError,
+    UnsafeManagedPathError,
+)
+from .instance_management import (
+    InstanceBusyError,
+    InstanceLimitExceeded,
+    InstanceManagementError,
+    InstanceNotFoundError,
+    InstanceOperationError,
+    ManagedFileMissingError,
+    MissingLogFileError,
+    MissingPresetError,
+    MutationResult,
+    NoAvailablePortError,
+    ProfileBusyError,
+    ProfileNotFoundError,
+    create_instance,
+    delete_instance,
+    delete_instance_logs,
+    delete_profile,
+    open_validated_file,
+    preflight_managed_root_layout,
+    replace_admin_instance_preset,
+    staged_first_instance_log,
+    validate_instance_log_file,
+    validate_instance_preset,
+    validate_instance_start_file,
 )
 User = get_user_model()
 
@@ -68,6 +100,73 @@ def message_response(data, message="Operacja się powiodła"):
         "result": data,
         "message": message
     })
+
+
+def _mutation_response(result: MutationResult, data, message: str):
+    payload = {"result": data, "message": message}
+    if result.cleanup_pending is not None:
+        payload["cleanup_pending"] = {
+            "pending": True,
+            "reason": result.cleanup_pending.reason,
+            "pending_count": result.cleanup_pending.pending_count,
+        }
+        payload["message"] = "Operacja zakończona; czyszczenie plików wymaga uwagi administratora."
+    return Response(payload, status=200)
+
+
+def _delete_response(result: MutationResult, message: str):
+    payload = {"message": message}
+    if result.cleanup_pending is not None:
+        payload["cleanup_pending"] = {
+            "pending": True,
+            "reason": result.cleanup_pending.reason,
+            "pending_count": result.cleanup_pending.pending_count,
+        }
+        payload["message"] = "Operacja zakończona; czyszczenie plików wymaga uwagi administratora."
+    return Response(payload, status=200)
+
+
+def _task_response(task_id: str, cleanup_pending=None):
+    payload = {"task_id": task_id}
+    if cleanup_pending is not None:
+        payload["cleanup_pending"] = {
+            "pending": True,
+            "reason": cleanup_pending.reason,
+            "pending_count": cleanup_pending.pending_count,
+        }
+        payload["message"] = "Uruchomienie rozpoczęte; czyszczenie plików wymaga uwagi administratora."
+    return Response(payload, status=202)
+
+
+def _close_start_file_stack(file_stack):
+    """Compensate staged first-start files and return a static rollback error if needed."""
+    try:
+        file_stack.close()
+    except ManagedFileRollbackError:
+        return _operation_error("Nie udało się bezpiecznie wycofać zmian pliku logu.")
+    except ManagedFileError:
+        return _operation_error("Nie udało się bezpiecznie wycofać zmian pliku logu.")
+    except Exception:
+        return _operation_error("Nie udało się bezpiecznie wycofać zmian pliku logu.")
+    return None
+
+
+def _snapshot_value(snapshot, key, default=None):
+    value = snapshot
+    try:
+        for component in key.split("."):
+            value = value[component]
+        return value
+    except (KeyError, TypeError):
+        return default
+
+
+def _managed_path_error(message="Pliki instancji wymagają weryfikacji przez administratora."):
+    return Response({"message": message}, status=400)
+
+
+def _operation_error(message="Nie udało się wykonać operacji na plikach instancji."):
+    return Response({"message": message}, status=500)
     
 def get_super_user():
     try:
@@ -175,16 +274,27 @@ class ModeratorPanelViewset(viewsets.ViewSet):
     @action(detail=True, methods=["delete"], url_path="user/delete")
     def deleteProfile(self, request, pk=None):
         try:
-            user = Profile.objects.get(pk=pk)
-        except Profile.DoesNotExist:
+            require_lifecycle_autocommit()
+            result = delete_profile(
+                profile_id=pk,
+                config_snapshot=config.snapshot(),
+            )
+        except ProfileNotFoundError:
             return Response({"message": "Użytkownik nie istnieje"}, status=404)
-        if any(is_instance_lifecycle_busy(instance) for instance in user.instances.all()):
+        except ProfileBusyError:
             return Response(
                 {"message": "Nie można usunąć użytkownika podczas aktywnej operacji instancji"},
                 status=400,
             )
-        user.delete()
-        return Response({"message": "Użytkownik usunięty"})
+        except UnsafeManagedPathError:
+            return _managed_path_error()
+        except ManagedFileError:
+            return _operation_error()
+        except InstanceManagementError:
+            return _operation_error()
+        except Exception:
+            return _operation_error()
+        return _delete_response(result, "Użytkownik usunięty")
     
     # Sekcja configu
     @action(detail=False, methods=["get"], url_path="config")
@@ -259,74 +369,81 @@ class InstancesViewset(viewsets.ModelViewSet):
         })
 
     def create(self, request):
-        """Reserve a port, persist an instance, and generate its host files."""
+        """Validate an upload, then publish the instance and its managed files together."""
         user = self.request.user
-        
         serializer = self.serializer_class(data=request.data)
-        if serializer.is_valid():
-            if user.instances.count() >= 5 and not user.is_staff:
-                return Response({"message": "Przekroczono limit 5 instancji"}, status=403)
-            with transaction.atomic():
-                available_port = Ports.objects.select_for_update().filter(is_available=True).first()
-                if not available_port:
-                    return Response({"message": "Brak dostępnych portów"}, status=403)
-
-                instance = serializer.save(user=user, port=available_port)
-                
-                available_port.is_available = False
-                available_port.save()
-            
-            with operation_loggers(
-                config.get("paths.logs_directory", "/logs"),
-                user.username,
-                ("create",),
-            ) as loggers:
-                create_logger = loggers["create"]
-                mod_paths = preset_parser(instance.preset.path, log_callback=create_logger.info)
-                if not user.server_config:
-                    server_config_file_path = generate_server_config(
-                        user.username,
-                        "test",
-                        config.get("paths.arma3"),
-                        log_callback=create_logger.info,
-                    )
-                    user.server_config = server_config_file_path
-                    user.save()
-                start_file_path = generate_sh_file(
-                    instance.name,
-                    instance.port.port_number,
-                    user.username,
-                    mod_paths,
-                    config.get("paths.mods_directory"),
-                    config.get("paths.arma3"),
-                    log_callback=create_logger.info,
-                )
-                instance.start_file_path = start_file_path
-                instance.save()
-
-            return message_response(self.serializer_class(instance).data, "Instancja została utworzona")
-        else:
+        if not serializer.is_valid():
             return Response(serializer.errors, status=400)
+
+        try:
+            require_lifecycle_autocommit()
+            config_snapshot = config.snapshot()
+            preflight_managed_root_layout(config_snapshot)
+            log_directory = _snapshot_value(
+                config_snapshot,
+                "paths.logs_directory",
+                "/logs",
+            )
+            with operation_loggers(log_directory, user.username, ("create",)) as loggers:
+                result = create_instance(
+                    owner=user,
+                    validated_data=serializer.validated_data,
+                    config_snapshot=config_snapshot,
+                    log_callback=loggers["create"].info,
+                )
+        except InstanceLimitExceeded:
+            return Response({"message": "Przekroczono limit 5 instancji"}, status=403)
+        except NoAvailablePortError:
+            return Response({"message": "Brak dostępnych portów"}, status=403)
+        except MissingPresetError:
+            return Response({"message": "Wymagany jest plik preset"}, status=400)
+        except UnsafeManagedPathError:
+            return _managed_path_error()
+        except ManagedFileError:
+            return _operation_error("Nie udało się bezpiecznie zapisać plików instancji.")
+        except InstanceManagementError:
+            return _operation_error("Nie udało się utworzyć instancji.")
+        except Exception:
+            return _operation_error("Nie udało się utworzyć instancji.")
+
+        return _mutation_response(
+            result,
+            self.serializer_class(result.instance).data,
+            "Instancja została utworzona",
+        )
     
     def destroy(self, request, pk=None):
-        """Delete a stopped instance and release model-owned files and port."""
+        """Delete a stopped instance through the lifecycle-locked file service."""
         try:
             instance = self.get_object()
         except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
-        
-        if is_instance_lifecycle_busy(instance):
+
+        try:
+            require_lifecycle_autocommit()
+            result = delete_instance(
+                instance_id=instance.pk,
+                config_snapshot=config.snapshot(),
+            )
+        except InstanceNotFoundError:
+            return Response({"message": "Instancja nie została znaleziona"}, status=404)
+        except InstanceBusyError:
             message = (
                 "Nie można usunąć działającej instancji"
                 if instance.is_running
                 else "Nie można usunąć instancji podczas aktywnej operacji"
             )
             return Response({"message": message}, status=400)
-        
-        with transaction.atomic():
-            instance.delete()
-            
-        return Response({"message": "Instancja została usunięta"}, status=200)
+        except UnsafeManagedPathError:
+            return _managed_path_error()
+        except ManagedFileError:
+            return _operation_error("Nie udało się bezpiecznie usunąć plików instancji.")
+        except InstanceManagementError:
+            return _operation_error("Nie udało się usunąć instancji.")
+        except Exception:
+            return _operation_error("Nie udało się usunąć instancji.")
+
+        return _delete_response(result, "Instancja została usunięta")
     
     @action(detail=True, methods=["post"], url_path="start")
     def start(self, request, pk=None):
@@ -340,6 +457,10 @@ class InstancesViewset(viewsets.ModelViewSet):
                 status=500,
             )
 
+        file_stack = ExitStack()
+        start_log_journal = None
+        cleanup_pending = None
+        authorization_exception = None
         try:
             queued = None
             with lifecycle_transaction():
@@ -351,7 +472,11 @@ class InstancesViewset(viewsets.ModelViewSet):
                         {"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"},
                         status=404,
                     )
-                self.check_object_permissions(request, instance)
+                try:
+                    self.check_object_permissions(request, instance)
+                except APIException as error:
+                    authorization_exception = error
+                    raise
                 if instance.is_admin_instance and actor.is_staff:
                     operator = get_super_user()
                     if not operator:
@@ -430,21 +555,47 @@ class InstancesViewset(viewsets.ModelViewSet):
                         status=403,
                     )
 
-                arma3_dir = config.get("paths.arma3")
+                config_snapshot = config.snapshot()
+                arma3_dir = _snapshot_value(config_snapshot, "paths.arma3")
+                if not isinstance(arma3_dir, (str, os.PathLike)):
+                    return Response(
+                        {"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"},
+                        status=400,
+                    )
+                arma3_dir = os.fspath(arma3_dir)
+                try:
+                    preset_path = validate_instance_preset(instance, config_snapshot)
+                    validate_instance_start_file(instance, config_snapshot)
+                    log_path = validate_instance_log_file(
+                        instance,
+                        require_exists=bool(instance.log_file),
+                    )
+                except (UnsafeManagedPathError, ManagedFileMissingError, ManagedFileError):
+                    return Response(
+                        {"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"},
+                        status=400,
+                    )
+                try:
+                    preflight_managed_root_layout(config_snapshot)
+                except UnsafeManagedPathError:
+                    return _managed_path_error()
                 expected_executable = os.path.realpath(
                     os.path.join(arma3_dir, "arma3server_x64")
                 )
                 with operation_loggers(
-                    config.get("paths.logs_directory", "/logs"),
+                    _snapshot_value(config_snapshot, "paths.logs_directory", "/logs"),
                     operator.username,
                     ("start",),
                 ) as loggers:
                     start_logger = loggers["start"]
-                    workshop_ids = preset_parser(
-                        instance.preset.path,
-                        log_callback=start_logger.info,
-                    )
-                    mods_dir = config.get("paths.mods_directory")
+                    try:
+                        workshop_ids = preset_parser(
+                            preset_path,
+                            log_callback=start_logger.info,
+                        )
+                    except Exception:
+                        return _operation_error("Nie udało się zweryfikować plików instancji.")
+                    mods_dir = _snapshot_value(config_snapshot, "paths.mods_directory")
                     if check_installed(
                         wids=workshop_ids,
                         mods_dir=mods_dir,
@@ -456,19 +607,6 @@ class InstancesViewset(viewsets.ModelViewSet):
                             {"message": "Niektóre mody są niezainstalowane. Proszę je najpierw pobrać."},
                             status=400,
                         )
-                    if not check_sh_file_exists(
-                        instance.name,
-                        log_callback=start_logger.info,
-                    ):
-                        return Response(
-                            {"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"},
-                            status=400,
-                        )
-                    if not instance.start_file_path or not instance.start_file_path.strip():
-                        return Response(
-                            {"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"},
-                            status=400,
-                        )
                     if not instance.log_file:
                         log_filename = "log_file.txt"
                         log_content = (
@@ -478,15 +616,24 @@ class InstancesViewset(viewsets.ModelViewSet):
                             log_content.encode("utf-8"),
                             name=log_filename,
                         )
-                        instance.log_file.save(log_filename, content_file, save=True)
-                    try:
-                        if not os.fspath(instance.log_file.path).strip():
-                            raise ValueError("The log file path is empty.")
-                    except Exception:
-                        return Response(
-                            {"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"},
-                            status=400,
+                        (
+                            start_log_journal,
+                            log_relative_name,
+                            log_path,
+                        ) = file_stack.enter_context(
+                            staged_first_instance_log(
+                                instance,
+                                config_snapshot,
+                                content_file,
+                            )
                         )
+                        start_log_journal.publish()
+                        instance.log_file.name = log_relative_name
+                        instance.log_file._committed = True
+                        instance.save(update_fields=["log_file"])
+                        transaction.on_commit(start_log_journal.mark_committed)
+                    if not log_path:
+                        raise UnsafeManagedPathError()
 
                 binding = create_instance_task_binding(instance, InstanceTask.Kind.START)
                 run_id = uuid4()
@@ -515,8 +662,42 @@ class InstancesViewset(viewsets.ModelViewSet):
                     ]
                 )
                 queued = (binding, instance.pk, str(run_id), arma3_dir)
+            if start_log_journal is not None:
+                cleanup_pending = start_log_journal.finalize()
+        except APIException as error:
+            if error is authorization_exception:
+                raise
+            rollback_response = _close_start_file_stack(file_stack)
+            if rollback_response is not None:
+                return rollback_response
+            return _operation_error("Nie udało się przygotować pliku logu.")
         except Http404:
+            rollback_response = _close_start_file_stack(file_stack)
+            if rollback_response is not None:
+                return rollback_response
             return Response({"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"}, status=404)
+        except UnsafeManagedPathError:
+            rollback_response = _close_start_file_stack(file_stack)
+            if rollback_response is not None:
+                return rollback_response
+            return _managed_path_error("Katalog logu wymaga weryfikacji przez administratora.")
+        except ManagedFileRollbackError:
+            rollback_response = _close_start_file_stack(file_stack)
+            if rollback_response is not None:
+                return rollback_response
+            return _operation_error("Nie udało się bezpiecznie wycofać zmian pliku logu.")
+        except (ManagedFileError, DatabaseError, OSError, ValueError):
+            rollback_response = _close_start_file_stack(file_stack)
+            if rollback_response is not None:
+                return rollback_response
+            return _operation_error("Nie udało się przygotować pliku logu.")
+        except Exception:
+            rollback_response = _close_start_file_stack(file_stack)
+            if rollback_response is not None:
+                return rollback_response
+            return _operation_error("Nie udało się przygotować pliku logu.")
+        finally:
+            file_stack.close()
         if queued is None:
             return Response(
                 {"message": "Nie udało się rozpocząć zadania uruchamiania."},
@@ -566,12 +747,21 @@ class InstancesViewset(viewsets.ModelViewSet):
                     current.shutdown_at = None
                     current.save()
             if delivery_confirmed:
-                return Response({"task_id": binding.task_id}, status=202)
+                return _task_response(binding.task_id, cleanup_pending)
+            failure_payload = {
+                "message": "Nie udało się rozpocząć zadania uruchamiania."
+            }
+            if cleanup_pending is not None:
+                failure_payload["cleanup_pending"] = {
+                    "pending": True,
+                    "reason": cleanup_pending.reason,
+                    "pending_count": cleanup_pending.pending_count,
+                }
             return Response(
-                {"message": "Nie udało się rozpocząć zadania uruchamiania."},
+                failure_payload,
                 status=500,
             )
-        return Response({"task_id": task_id}, status=202)
+        return _task_response(task_id, cleanup_pending)
 
     @action(detail=True, methods=["post"], url_path="stop")
     def stop(self, request, pk=None):
@@ -614,54 +804,52 @@ class InstancesViewset(viewsets.ModelViewSet):
         
         if not instance.is_admin_instance:
             return Response({"message": "To nie jest instancja administracyjna."}, status=400)
-        
-        if is_instance_lifecycle_busy(instance):
+
+        serializer = self.serializer_class(instance, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=400)
+        if "preset" not in serializer.validated_data:
+            return Response({"preset": ["To pole jest wymagane."]}, status=400)
+
+        try:
+            require_lifecycle_autocommit()
+            config_snapshot = config.snapshot()
+            preflight_managed_root_layout(config_snapshot)
+            log_directory = _snapshot_value(
+                config_snapshot,
+                "paths.logs_directory",
+                "/logs",
+            )
+            with operation_loggers(log_directory, user.username, ("change_preset",)) as loggers:
+                result = replace_admin_instance_preset(
+                    instance_id=instance.pk,
+                    validated_data=serializer.validated_data,
+                    config_snapshot=config_snapshot,
+                    log_callback=loggers["change_preset"].info,
+                )
+        except InstanceBusyError:
             message = (
                 "Nie można zmienić presetu działającej instancji."
                 if instance.is_running
                 else "Nie można zmienić presetu podczas aktywnej operacji instancji."
             )
-            return Response(
-                {"message": message},
-                status=400,
-            )
-        
-        
+            return Response({"message": message}, status=400)
+        except MissingPresetError:
+            return Response({"preset": ["To pole jest wymagane."]}, status=400)
+        except UnsafeManagedPathError:
+            return _managed_path_error()
+        except ManagedFileError:
+            return _operation_error("Nie udało się bezpiecznie zmienić presetu.")
+        except InstanceManagementError:
+            return _operation_error("Nie udało się zmienić presetu.")
+        except Exception:
+            return _operation_error("Nie udało się zmienić presetu.")
 
-        serializer = self.serializer_class(instance, data=request.data, partial=True)
-        if serializer.is_valid():
-            if instance.preset and os.path.exists(instance.preset.path):
-                os.remove(instance.preset.path)
-            instance.preset = serializer.validated_data["preset"]
-            instance.save()
-        else:
-            return Response(serializer.errors, status=400)
-        
-        with operation_loggers(
-            config.get("paths.logs_directory", "/logs"),
-            user.username,
-            ("change_preset",),
-        ) as loggers:
-            change_preset_logger = loggers["change_preset"]
-            mod_paths = preset_parser(instance.preset.path, log_callback=change_preset_logger.info)
-
-            if instance.start_file_path and os.path.exists(instance.start_file_path):
-                os.remove(instance.start_file_path)
-            start_file_path = generate_sh_file(
-                instance.name,
-                instance.port.port_number,
-                user.username,
-                mod_paths,
-                config.get("paths.mods_directory"),
-                config.get("paths.arma3"),
-                log_callback=change_preset_logger.info,
-                is_admin_instance=True,
-            )
-            instance.start_file_path = start_file_path
-            instance.is_ready = False
-            instance.save()
-
-        return message_response(self.serializer_class(instance).data, "Preset instancji głównej został zmieniony")
+        return _mutation_response(
+            result,
+            self.serializer_class(result.instance).data,
+            "Preset instancji głównej został zmieniony",
+        )
 
     @action(detail=True, methods=['post'], url_path='download_mods')
     def download_mods(self, request, pk=None):
@@ -683,6 +871,17 @@ class InstancesViewset(viewsets.ModelViewSet):
                 return Response({"message": "Nie znaleziono administratora."}, status=404)
         else:
             user = self.request.user
+
+        try:
+            config_snapshot = config.snapshot()
+            preset_path = validate_instance_preset(instance, config_snapshot)
+            mods_directory = _snapshot_value(config_snapshot, "paths.mods_directory")
+        except UnsafeManagedPathError:
+            return _managed_path_error("Plik preset wymaga weryfikacji przez administratora.")
+        except ManagedFileError:
+            return Response({"message": "Plik preset instancji nie istnieje."}, status=400)
+        except Exception:
+            return _operation_error("Nie udało się zweryfikować pliku preset.")
             
         disk = psutil.disk_usage("/")
         if disk.free < 20 * 1024 * 1024 * 1024:
@@ -697,8 +896,8 @@ class InstancesViewset(viewsets.ModelViewSet):
                     "instance_id": instance.id,
                     "user": user.username,
                     "name": instance.name,
-                    "file_path": instance.preset.path,
-                    "mods_directory": config.get("paths.mods_directory"),
+                    "file_path": preset_path,
+                    "mods_directory": mods_directory,
                 },
             )
         except InstanceLifecycleBusy:
@@ -768,33 +967,40 @@ class InstancesViewset(viewsets.ModelViewSet):
         except ValueError:
             return Response({"message": "Nieprawidłowa wartość parametru tail"}, status=400)
 
-        log_path = instance.log_file.path if instance.log_file else None
-        if log_path and os.path.exists(log_path):
-            if tail:
-                with open(log_path, 'rb') as f:
-                    f.seek(0, os.SEEK_END)
+        try:
+            log_path = validate_instance_log_file(instance)
+        except UnsafeManagedPathError:
+            return _managed_path_error("Plik logu wymaga weryfikacji przez administratora.")
+        except ManagedFileError:
+            return _operation_error("Nie udało się zweryfikować pliku logu.")
+        if not log_path:
+            return Response({"message": "Brak logów lub plik nie istnieje."}, status=404)
+        try:
+            with open_validated_file(log_path) as log_file:
+                if tail:
+                    log_file.seek(0, os.SEEK_END)
                     buffer_size = 4096
-                    file_size = f.tell()
-                    buffer = b''
+                    file_size = log_file.tell()
+                    buffer = b""
                     lines_found = 0
-                    
-                    # Read file in chunks from the end
                     while lines_found < tail and file_size > 0:
                         read_pos = max(0, file_size - buffer_size)
-                        f.seek(read_pos)
-                        chunk = f.read(min(buffer_size, file_size))
+                        log_file.seek(read_pos)
+                        chunk = log_file.read(min(buffer_size, file_size))
                         buffer = chunk + buffer
-                        lines_found = buffer.count(b'\n')
+                        lines_found = buffer.count(b"\n")
                         file_size -= buffer_size
-                    
                     lines = buffer.splitlines()
-                    content = b'\n'.join(lines[-tail:]).decode(errors='replace')
-            else:
-                with open(log_path, 'r', errors='replace') as f:
-                    content = f.read()
-            return Response(content, content_type="text/plain", status=200)
-        else:
+                    content = b"\n".join(lines[-tail:]).decode(errors="replace")
+                else:
+                    content = log_file.read().decode(errors="replace")
+        except ManagedFileMissingError:
             return Response({"message": "Brak logów lub plik nie istnieje."}, status=404)
+        except UnsafeManagedPathError:
+            return _managed_path_error("Plik logu wymaga weryfikacji przez administratora.")
+        except ManagedFileError:
+            return _operation_error("Nie udało się odczytać pliku logu.")
+        return Response(content, content_type="text/plain", status=200)
 
     @action(detail=True, methods=['get'], url_path='logs/download')
     def download_logs(self, request, pk=None):
@@ -803,12 +1009,23 @@ class InstancesViewset(viewsets.ModelViewSet):
         except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
 
-        log_path = instance.log_file.path if instance.log_file else None
-        if log_path and os.path.exists(log_path):
-            with open(log_path, 'r', errors='replace') as f:
-                        logs = f.read()
-        else:
+        try:
+            log_path = validate_instance_log_file(instance)
+        except UnsafeManagedPathError:
+            return _managed_path_error("Plik logu wymaga weryfikacji przez administratora.")
+        except ManagedFileError:
+            return _operation_error("Nie udało się zweryfikować pliku logu.")
+        if not log_path:
             return Response({"message": "Brak logów do pobrania"}, status=404)
+        try:
+            with open_validated_file(log_path) as log_file:
+                logs = log_file.read().decode(errors="replace")
+        except ManagedFileMissingError:
+            return Response({"message": "Brak logów do pobrania"}, status=404)
+        except UnsafeManagedPathError:
+            return _managed_path_error("Plik logu wymaga weryfikacji przez administratora.")
+        except ManagedFileError:
+            return _operation_error("Nie udało się odczytać pliku logu.")
 
         response = HttpResponse(logs, content_type="text/plain")
         response['Content-Disposition'] = f'attachment; filename="logs_{pk}.txt"'
@@ -821,24 +1038,32 @@ class InstancesViewset(viewsets.ModelViewSet):
         except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
         
-        if is_instance_lifecycle_busy(instance):
+        try:
+            require_lifecycle_autocommit()
+            result = delete_instance_logs(
+                instance_id=instance.pk,
+                config_snapshot=config.snapshot(),
+            )
+        except InstanceBusyError:
             message = (
                 "Nie można usunąć logów podczas działania instancji"
                 if instance.is_running
                 else "Nie można usunąć logów podczas aktywnej operacji instancji"
             )
-            return Response(
-                {"message": message},
-                status=400,
-            )
-
-        if not instance.log_file:
+            return Response({"message": message}, status=400)
+        except MissingLogFileError:
             return Response({"message": "Brak logów do usunięcia"}, status=404)
-
-        instance.log_file.delete()
-        instance.log_file = None
-        instance.save()
-        return Response({"message": "Logi zostały usunięte"}, status=200)
+        except InstanceNotFoundError:
+            return Response({"message": "Instancja nie została znaleziona"}, status=404)
+        except UnsafeManagedPathError:
+            return _managed_path_error("Plik logu wymaga weryfikacji przez administratora.")
+        except ManagedFileError:
+            return _operation_error("Nie udało się bezpiecznie usunąć pliku logu.")
+        except InstanceManagementError:
+            return _operation_error("Nie udało się usunąć logów.")
+        except Exception:
+            return _operation_error("Nie udało się usunąć logów.")
+        return _delete_response(result, "Logi zostały usunięte")
     
 class MissionsViewset(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
