@@ -69,6 +69,7 @@ class InstanceTaskPermissionTests(TransactionTestCase):
     def test_task_status_checks_persisted_owner_before_querying_celery(self):
         instance = self.make_instance()
         binding = create_instance_task_binding(instance, "download")
+        mark_instance_task_finished(binding.task_id)
         celery_result = SimpleNamespace(
             status="SUCCESS", result={"status": "completed"}
         )

@@ -242,6 +242,16 @@ class InstancePermissionTests(TransactionTestCase):
                             self.assertEqual(response.status_code, expected_status)
                             if label == "download" and expected_status == 202:
                                 self.assertEqual(response.data, {"task_id": "invented-task-id"})
+                                queued_bindings = InstanceTask.objects.filter(
+                                    instance=instance,
+                                    kind=InstanceTask.Kind.DOWNLOAD,
+                                    claimed_at__isnull=True,
+                                    finished_at__isnull=True,
+                                    superseded_at__isnull=True,
+                                    requires_attention=False,
+                                )
+                                self.assertEqual(queued_bindings.count(), 1)
+                                queued_bindings.get().delete()
 
     def test_start_and_stop_keep_the_202_task_id_contract(self):
         instance = self.make_instance(self.owner, name="queued-instance")

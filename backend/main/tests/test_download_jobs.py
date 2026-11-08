@@ -11,8 +11,10 @@ from celery.exceptions import Ignore
 from django.contrib.auth import get_user_model
 from django.conf import settings
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db.models.query import QuerySet
 from django.test import SimpleTestCase, TransactionTestCase
 from django.utils import timezone
+from rest_framework.test import APIClient
 
 from main.download_jobs import (
     DownloadAdmissionError,
@@ -311,6 +313,542 @@ class DownloadWorkerTests(TransactionTestCase):
             lifecycle_state=Instances.LifecycleState.STOPPED,
             is_ready=ready,
         )
+
+    def mark_download_attention_through_api(self, binding, *, expected_claimed_at=None):
+        client = APIClient()
+        client.force_authenticate(user=self.owner)
+        private_result = {"status": "PRIVATE_LATE_DELIVERY_BACKEND_RESULT"}
+        with patch(
+            "main.views.AsyncResult",
+            return_value=SimpleNamespace(status="REVOKED", result=private_result),
+        ) as async_result:
+            response = client.get(
+                f"/api/instances/task_status/{binding.task_id}/"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data,
+            {
+                "id": binding.task_id,
+                "state": "REQUIRES_ATTENTION",
+                "result": {
+                    "status": "Stan zadania wymaga ręcznej weryfikacji przez administratora."
+                },
+            },
+        )
+        self.assertNotIn("PRIVATE_LATE_DELIVERY_BACKEND_RESULT", repr(response.data))
+        async_result.assert_called_once_with(binding.task_id)
+        binding.refresh_from_db()
+        self.assertTrue(binding.requires_attention)
+        self.assertEqual(
+            binding.attention_reason,
+            InstanceTask.AttentionReason.WORKER_STATE_UNVERIFIED,
+        )
+        self.assertEqual(binding.claimed_at, expected_claimed_at)
+        self.assertIsNone(binding.finished_at)
+        return client
+
+    def test_late_delivery_of_api_attention_binding_is_ignored_before_worker_work(self):
+        instance = self.make_instance(ready=True)
+        binding, _reused = reserve_download(instance.pk)
+        client = self.mark_download_attention_through_api(binding)
+        binding.refresh_from_db()
+        attention_fields = (
+            binding.requires_attention,
+            binding.attention_reason,
+            binding.attention_workspace,
+            binding.claimed_at,
+            binding.finished_at,
+            binding.superseded_at,
+        )
+
+        with (
+            patch(
+                "main.download_jobs.config.snapshot",
+                side_effect=AssertionError("attention delivery must stop before config"),
+            ) as snapshot,
+            patch(
+                "main.download_jobs._validate_current_preset",
+                side_effect=AssertionError("attention delivery must stop before preset IO"),
+            ) as validate_preset,
+            patch(
+                "main.download_jobs._new_download_lease",
+                side_effect=AssertionError("attention delivery must stop before Redis"),
+            ) as lease_factory,
+            patch(
+                "main.download_jobs.operation_loggers",
+                side_effect=AssertionError("attention delivery must stop before logging"),
+            ) as operation_loggers,
+            patch(
+                "main.download_jobs.preset_parser",
+                side_effect=AssertionError("attention delivery must stop before parsing"),
+            ) as preset_parser,
+            patch(
+                "main.download_jobs.check_installed",
+                side_effect=AssertionError("attention delivery must stop before file checks"),
+            ) as check_installed,
+            patch(
+                "main.download_jobs.download_mods",
+                side_effect=AssertionError("attention delivery must stop before SteamCMD"),
+            ) as downloader,
+            bound_task_request(download_mods_task, binding.task_id),
+        ):
+            with self.assertRaises(Ignore):
+                download_mods_task.run(instance_id=instance.pk)
+
+        for boundary in (
+            snapshot,
+            validate_preset,
+            lease_factory,
+            operation_loggers,
+            preset_parser,
+            check_installed,
+            downloader,
+        ):
+            boundary.assert_not_called()
+
+        binding.refresh_from_db()
+        instance.refresh_from_db()
+        self.assertEqual(
+            (
+                binding.requires_attention,
+                binding.attention_reason,
+                binding.attention_workspace,
+                binding.claimed_at,
+                binding.finished_at,
+                binding.superseded_at,
+            ),
+            attention_fields,
+        )
+        self.assertTrue(instance.is_ready)
+
+        target = self.make_instance(ready=True)
+        with (
+            patch(
+                "main.views.config.snapshot",
+                side_effect=AssertionError("global attention fence precedes config"),
+            ) as config_snapshot,
+            patch(
+                "main.views.validate_instance_preset",
+                side_effect=AssertionError("global attention fence precedes preset IO"),
+            ) as api_preset_check,
+            patch(
+                "main.views.psutil.disk_usage",
+                side_effect=AssertionError("global attention fence precedes disk checks"),
+            ) as disk_usage,
+            patch(
+                "main.views.download_mods_task.apply_async",
+                side_effect=AssertionError("global attention fence must not publish"),
+            ) as dispatch,
+        ):
+            blocked = client.post(
+                f"/api/instances/{target.pk}/download_mods/",
+                {},
+                format="json",
+            )
+
+        self.assertEqual(blocked.status_code, 409)
+        self.assertEqual(
+            blocked.data,
+            {"message": "Inna operacja serwera lub pobierania jest już w toku."},
+        )
+        config_snapshot.assert_not_called()
+        api_preset_check.assert_not_called()
+        disk_usage.assert_not_called()
+        dispatch.assert_not_called()
+        self.assertFalse(InstanceTask.objects.filter(instance=target).exists())
+
+    def test_attention_download_fence_blocks_another_queued_delivery_before_preparation(self):
+        attention_instance = self.make_instance(ready=True)
+        attention_binding, _reused = reserve_download(attention_instance.pk)
+        self.mark_download_attention_through_api(attention_binding)
+
+        waiting_instance = self.make_instance(ready=True)
+        waiting_binding = create_instance_task_binding(
+            waiting_instance,
+            InstanceTask.Kind.DOWNLOAD,
+        )
+
+        with (
+            patch(
+                "main.download_jobs.config.snapshot",
+                side_effect=AssertionError("attention fence must precede config"),
+            ) as snapshot,
+            patch(
+                "main.download_jobs._validate_current_preset",
+                side_effect=AssertionError("attention fence must precede preset IO"),
+            ) as validate_preset,
+            patch(
+                "main.download_jobs._new_download_lease",
+                side_effect=AssertionError("attention fence must precede Redis"),
+            ) as lease_factory,
+            patch(
+                "main.download_jobs.operation_loggers",
+                side_effect=AssertionError("attention fence must precede logging"),
+            ) as operation_loggers,
+            patch(
+                "main.download_jobs.preset_parser",
+                side_effect=AssertionError("attention fence must precede parsing"),
+            ) as preset_parser,
+            patch(
+                "main.download_jobs.check_installed",
+                side_effect=AssertionError("attention fence must precede file checks"),
+            ) as check_installed,
+            patch(
+                "main.download_jobs.download_mods",
+                side_effect=AssertionError("attention fence must precede SteamCMD"),
+            ) as downloader,
+            bound_task_request(download_mods_task, waiting_binding.task_id),
+        ):
+            with self.assertRaises(DownloadAdmissionError) as rejected:
+                download_mods_task.run(instance_id=waiting_instance.pk)
+
+        self.assertEqual(rejected.exception.code, "busy")
+        for boundary in (
+            snapshot,
+            validate_preset,
+            lease_factory,
+            operation_loggers,
+            preset_parser,
+            check_installed,
+            downloader,
+        ):
+            boundary.assert_not_called()
+
+        attention_binding.refresh_from_db()
+        attention_instance.refresh_from_db()
+        waiting_binding.refresh_from_db()
+        waiting_instance.refresh_from_db()
+        self.assertTrue(attention_binding.requires_attention)
+        self.assertEqual(
+            attention_binding.attention_reason,
+            InstanceTask.AttentionReason.WORKER_STATE_UNVERIFIED,
+        )
+        self.assertIsNone(attention_binding.claimed_at)
+        self.assertIsNone(attention_binding.finished_at)
+        self.assertTrue(attention_instance.is_ready)
+        self.assertIsNone(waiting_binding.claimed_at)
+        self.assertIsNotNone(waiting_binding.finished_at)
+        self.assertFalse(waiting_binding.requires_attention)
+        self.assertTrue(waiting_instance.is_ready)
+
+    def test_claim_before_terminal_status_keeps_claim_and_attention_fence(self):
+        from main.download_jobs import _claim_download
+
+        instance = self.make_instance(ready=True)
+        binding, _reused = reserve_download(instance.pk)
+        _claimed_instance, _claimed_binding = _claim_download(
+            binding.task_id,
+            instance.pk,
+        )
+        binding.refresh_from_db()
+        claimed_at = binding.claimed_at
+        self.assertIsNotNone(claimed_at)
+
+        self.mark_download_attention_through_api(
+            binding,
+            expected_claimed_at=claimed_at,
+        )
+
+        binding.refresh_from_db()
+        instance.refresh_from_db()
+        self.assertEqual(binding.claimed_at, claimed_at)
+        self.assertIsNone(binding.finished_at)
+        self.assertTrue(binding.requires_attention)
+        self.assertEqual(
+            binding.attention_reason,
+            InstanceTask.AttentionReason.WORKER_STATE_UNVERIFIED,
+        )
+        self.assertFalse(instance.is_ready)
+
+    def test_cross_instance_attention_transition_serializes_claim_and_later_guards(self):
+        from main.download_jobs import (
+            _assert_current_claim,
+            _claim_download,
+            _persist_ready,
+        )
+
+        attention_instance = self.make_instance(ready=True)
+        attention_binding = create_instance_task_binding(
+            attention_instance,
+            InstanceTask.Kind.DOWNLOAD,
+        )
+        worker_instance = self.make_instance(ready=True)
+        worker_binding = create_instance_task_binding(
+            worker_instance,
+            InstanceTask.Kind.DOWNLOAD,
+        )
+
+        # These test-only contexts impose an application-level schedule while
+        # ORM statements autocommit. They do not model database row locks.
+        coordinator = threading.Lock()
+        state_lock = threading.Lock()
+        coordinator_owner = [None]
+        decision_checked = threading.Event()
+        allow_claim_to_continue = threading.Event()
+        status_attempted = threading.Event()
+        status_finished = threading.Event()
+        events = []
+        thread_errors = []
+        attention_query_results = []
+        worker_result = {}
+        status_result = {}
+        manager = InstanceTask.objects
+        original_select_for_update = manager.select_for_update
+        original_exists = QuerySet.exists
+        original_save = InstanceTask.save
+        terminal_result = {"status": "PRIVATE_CROSS_INSTANCE_TERMINAL_RESULT"}
+
+        @contextmanager
+        def controlled_lifecycle_transaction():
+            thread_name = threading.current_thread().name
+            if thread_name == "attention-status":
+                status_attempted.set()
+            if not coordinator.acquire(timeout=3):
+                raise AssertionError("controlled lifecycle coordinator timed out")
+            try:
+                with state_lock:
+                    coordinator_owner[0] = thread_name
+                yield
+            finally:
+                with state_lock:
+                    coordinator_owner[0] = None
+                coordinator.release()
+
+        @contextmanager
+        def legacy_noop_atomic():
+            if threading.current_thread().name == "attention-status":
+                status_attempted.set()
+            yield
+
+        def contains_attention_lookup(node):
+            lhs = getattr(node, "lhs", None)
+            target = getattr(lhs, "target", None)
+            if getattr(target, "name", None) == "requires_attention":
+                return True
+            return any(
+                contains_attention_lookup(child)
+                for child in getattr(node, "children", ())
+            )
+
+        def watched_exists(queryset):
+            if (
+                threading.current_thread().name == "claim-worker"
+                and contains_attention_lookup(queryset.query.where)
+            ):
+                result = original_exists(queryset)
+                attention_query_results.append(result)
+                decision_checked.set()
+                if not allow_claim_to_continue.wait(timeout=3):
+                    raise AssertionError("claim schedule was not released")
+                return result
+            return original_exists(queryset)
+
+        def record_write(label):
+            with state_lock:
+                events.append((label, coordinator_owner[0]))
+
+        def observed_save(task_binding, *args, **kwargs):
+            result = original_save(task_binding, *args, **kwargs)
+            updated = set(kwargs.get("update_fields") or ())
+            if task_binding.pk == worker_binding.pk and updated == {"claimed_at"}:
+                record_write("claim")
+            elif (
+                task_binding.pk == attention_binding.pk
+                and updated == {"requires_attention", "attention_reason"}
+            ):
+                record_write("attention")
+            return result
+
+        def watched_select_for_update(*args, **kwargs):
+            if threading.current_thread().name == "attention-status":
+                with state_lock:
+                    events.append(("status-binding-lock", coordinator_owner[0]))
+            return original_select_for_update(*args, **kwargs)
+
+        def claim_worker():
+            try:
+                worker_result["claim"] = _claim_download(
+                    worker_binding.task_id,
+                    worker_instance.pk,
+                )
+            except BaseException as exc:
+                thread_errors.append(("claim-worker", exc))
+
+        def status_worker():
+            client = APIClient()
+            client.force_authenticate(user=self.owner)
+            try:
+                with patch(
+                    "main.views.AsyncResult",
+                    return_value=SimpleNamespace(
+                        status="REVOKED",
+                        result=terminal_result,
+                    ),
+                ):
+                    status_result["response"] = client.get(
+                        f"/api/instances/task_status/{attention_binding.task_id}/"
+                    )
+            except BaseException as exc:
+                thread_errors.append(("attention-status", exc))
+            finally:
+                status_finished.set()
+
+        worker = threading.Thread(target=claim_worker, name="claim-worker")
+        status = threading.Thread(target=status_worker, name="attention-status")
+        threads = []
+
+        with (
+            patch.object(QuerySet, "exists", new=watched_exists),
+            patch.object(
+                manager,
+                "select_for_update",
+                side_effect=watched_select_for_update,
+            ),
+            patch.object(InstanceTask, "save", new=observed_save),
+            patch(
+                "main.download_jobs.lifecycle_transaction",
+                new=controlled_lifecycle_transaction,
+            ),
+            patch(
+                "main.views.lifecycle_transaction",
+                new=controlled_lifecycle_transaction,
+            ),
+            patch("main.views.transaction.atomic", new=legacy_noop_atomic),
+        ):
+            try:
+                worker.start()
+                threads.append(worker)
+                decision_reached = decision_checked.wait(timeout=3)
+                if not decision_reached:
+                    worker_error_types = [
+                        type(error).__name__ for _thread_name, error in thread_errors
+                    ]
+                    self.fail(
+                        "worker did not reach its other-attention decision; "
+                        f"captured worker exception types: {worker_error_types}"
+                    )
+                self.assertEqual(attention_query_results, [False])
+
+                status.start()
+                threads.append(status)
+                self.assertTrue(
+                    status_attempted.wait(timeout=3),
+                    "status request did not enter a persistence boundary",
+                )
+                self.assertFalse(
+                    status_finished.wait(timeout=0.5),
+                    "attention committed while the worker held the coordinator",
+                )
+            finally:
+                allow_claim_to_continue.set()
+                for thread in threads:
+                    thread.join(timeout=3)
+
+            self.assertTrue(all(not thread.is_alive() for thread in threads))
+
+            self.assertEqual(thread_errors, [])
+            self.assertIn("claim", worker_result)
+            claimed_instance, claimed_binding = worker_result["claim"]
+            self.assertEqual(claimed_instance.pk, worker_instance.pk)
+            self.assertEqual(claimed_binding.pk, worker_binding.pk)
+            self.assertEqual(
+                [label for label, _owner in events if label in ("claim", "attention")],
+                ["claim", "attention"],
+            )
+            self.assertEqual(
+                [owner for label, owner in events if label in ("claim", "attention")],
+                ["claim-worker", "attention-status"],
+            )
+            self.assertEqual(
+                [owner for label, owner in events if label == "status-binding-lock"],
+                ["attention-status"],
+            )
+
+            status_response = status_result["response"]
+            self.assertEqual(status_response.status_code, 200)
+            self.assertEqual(status_response.data["state"], "REQUIRES_ATTENTION")
+            self.assertEqual(
+                status_response.data["result"],
+                {
+                    "status": "Stan zadania wymaga ręcznej weryfikacji przez administratora."
+                },
+            )
+            self.assertNotIn(
+                "PRIVATE_CROSS_INSTANCE_TERMINAL_RESULT",
+                repr(status_response.data),
+            )
+
+            lease = Mock(spec_set=["assert_owned"])
+            with self.assertRaises(DownloadAdmissionError) as current_claim_rejected:
+                _assert_current_claim(
+                    worker_binding.task_id,
+                    worker_instance.pk,
+                    lease,
+                )
+            self.assertEqual(current_claim_rejected.exception.code, "busy")
+
+            with self.assertRaises(DownloadAdmissionError) as readiness_rejected:
+                _persist_ready(
+                    worker_binding.task_id,
+                    worker_instance.pk,
+                    ready=True,
+                    lease=lease,
+                )
+            self.assertEqual(readiness_rejected.exception.code, "busy")
+            lease.assert_owned.assert_not_called()
+
+        attention_binding.refresh_from_db()
+        attention_instance.refresh_from_db()
+        worker_binding.refresh_from_db()
+        worker_instance.refresh_from_db()
+        self.assertTrue(attention_binding.requires_attention)
+        self.assertEqual(
+            attention_binding.attention_reason,
+            InstanceTask.AttentionReason.WORKER_STATE_UNVERIFIED,
+        )
+        self.assertIsNone(attention_binding.claimed_at)
+        self.assertIsNone(attention_binding.finished_at)
+        self.assertTrue(attention_instance.is_ready)
+        self.assertIsNotNone(worker_binding.claimed_at)
+        self.assertIsNone(worker_binding.finished_at)
+        self.assertFalse(worker_binding.requires_attention)
+        self.assertFalse(worker_instance.is_ready)
+
+    def test_healthy_unclaimed_legacy_download_does_not_block_another_claim(self):
+        from main.download_jobs import _claim_download
+
+        legacy_instance = self.make_instance(ready=True)
+        legacy_binding = create_instance_task_binding(
+            legacy_instance,
+            InstanceTask.Kind.DOWNLOAD,
+        )
+        waiting_instance = self.make_instance(ready=True)
+        waiting_binding = create_instance_task_binding(
+            waiting_instance,
+            InstanceTask.Kind.DOWNLOAD,
+        )
+
+        claimed_instance, claimed_binding = _claim_download(
+            waiting_binding.task_id,
+            waiting_instance.pk,
+        )
+
+        self.assertEqual(claimed_instance.pk, waiting_instance.pk)
+        self.assertEqual(claimed_binding.pk, waiting_binding.pk)
+        legacy_binding.refresh_from_db()
+        waiting_binding.refresh_from_db()
+        legacy_instance.refresh_from_db()
+        waiting_instance.refresh_from_db()
+        self.assertIsNone(legacy_binding.claimed_at)
+        self.assertIsNone(legacy_binding.finished_at)
+        self.assertFalse(legacy_binding.requires_attention)
+        self.assertIsNotNone(waiting_binding.claimed_at)
+        self.assertIsNone(waiting_binding.finished_at)
+        self.assertFalse(waiting_binding.requires_attention)
+        self.assertTrue(legacy_instance.is_ready)
+        self.assertFalse(waiting_instance.is_ready)
 
     def test_duplicate_delivery_ignores_an_already_claimed_binding(self):
         instance = self.make_instance(ready=True)

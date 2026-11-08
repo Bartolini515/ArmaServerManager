@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlsplit
 
 from celery.exceptions import Ignore
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 from redis import Redis
 from redis.backoff import NoBackoff
@@ -67,8 +68,17 @@ class DownloadLeasePreparationError(RuntimeError):
         super().__init__("Nie można przygotować blokady pobierania modów.")
 
 
-def reserve_download(instance_id: int):
-    """Reserve or reuse a committed download binding under the global mutex."""
+def reserve_download(
+    instance_id: int,
+    *,
+    preflight: Callable[[], None] | None = None,
+):
+    """Reserve or reuse a committed download binding under the global mutex.
+
+    New-admission preflight runs only after reuse and conflict decisions, while
+    the lifecycle mutex still serializes the decision. A failed preflight exits
+    the transaction before any binding is created.
+    """
     require_lifecycle_autocommit()
     with lifecycle_transaction():
         instance = Instances.objects.select_for_update().filter(pk=instance_id).first()
@@ -104,6 +114,9 @@ def reserve_download(instance_id: int):
             superseded_at__isnull=True,
         ).exists():
             raise DownloadAdmissionError("busy")
+
+        if preflight is not None:
+            preflight()
 
         binding = create_instance_task_binding(instance, InstanceTask.Kind.DOWNLOAD)
         return binding, False
@@ -555,6 +568,7 @@ def _claim_download(task_id: str, instance_id: int):
             or binding.kind != InstanceTask.Kind.DOWNLOAD
             or binding.finished_at is not None
             or binding.superseded_at is not None
+            or binding.requires_attention
         ):
             raise Ignore()
         if binding.claimed_at is not None:
@@ -565,12 +579,7 @@ def _claim_download(task_id: str, instance_id: int):
             or instance.pid is not None
         ):
             raise DownloadAdmissionError("not_stopped")
-        if InstanceTask.objects.filter(
-            kind=InstanceTask.Kind.DOWNLOAD,
-            claimed_at__isnull=False,
-            finished_at__isnull=True,
-            superseded_at__isnull=True,
-        ).exclude(pk=binding.pk).exists():
+        if _other_download_fence_exists(binding):
             raise DownloadAdmissionError("busy")
         if InstanceTask.objects.filter(
             instance=instance,
@@ -626,6 +635,20 @@ def _new_download_lease():
         raise DownloadLeasePreparationError() from None
 
 
+def _other_download_fence_exists(binding: InstanceTask) -> bool:
+    """Return whether another active download is claimed or attention-fenced."""
+    return (
+        InstanceTask.objects.filter(
+            kind=InstanceTask.Kind.DOWNLOAD,
+            finished_at__isnull=True,
+            superseded_at__isnull=True,
+        )
+        .exclude(pk=binding.pk)
+        .filter(Q(claimed_at__isnull=False) | Q(requires_attention=True))
+        .exists()
+    )
+
+
 def _assert_current_claim(
     task_id: str,
     instance_id: int,
@@ -648,12 +671,7 @@ def _assert_current_claim(
             or instance.pid is not None
         ):
             raise DownloadAdmissionError("busy")
-        if InstanceTask.objects.filter(
-            kind=InstanceTask.Kind.DOWNLOAD,
-            claimed_at__isnull=False,
-            finished_at__isnull=True,
-            superseded_at__isnull=True,
-        ).exclude(pk=binding.pk).exists():
+        if _other_download_fence_exists(binding):
             raise DownloadAdmissionError("busy")
     lease.assert_owned()
 
@@ -683,12 +701,7 @@ def _persist_ready(
                 or instance.pid is not None
             ):
                 raise DownloadAdmissionError("busy")
-            if InstanceTask.objects.filter(
-                kind=InstanceTask.Kind.DOWNLOAD,
-                claimed_at__isnull=False,
-                finished_at__isnull=True,
-                superseded_at__isnull=True,
-            ).exclude(pk=binding.pk).exists():
+            if _other_download_fence_exists(binding):
                 raise DownloadAdmissionError("busy")
             lease.assert_owned()
             instance.is_ready = ready

@@ -5,12 +5,15 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, TransactionTestCase, override_settings
+from django.utils import timezone
+from rest_framework.test import APIClient
 
 from main.steamcmd.mods_download import assign_new_steamguard, steamcmd_download, test_connection
 from main.steamcmd.steam_auth import generate_steam_guard_code
@@ -578,12 +581,19 @@ class SteamCmdSecretTests(TestCase):
         )
         request = RequestFactory().get("/api/instances/task_status/fake-task/")
         request.user = SimpleNamespace(is_staff=True)
+        task_binding = SimpleNamespace(
+            superseded_at=None,
+            requires_attention=False,
+            kind=InstanceTask.Kind.DOWNLOAD,
+            claimed_at=None,
+            finished_at=timezone.now(),
+        )
 
         with (
             patch("main.views.InstanceTask.objects.filter") as task_bindings,
             patch("main.views.AsyncResult", return_value=failed_task),
         ):
-            task_bindings.return_value.first.return_value = SimpleNamespace(superseded_at=None)
+            task_bindings.return_value.first.return_value = task_binding
             response = InstancesViewset().task_status(request, task_id="fake-task")
 
         self.assertEqual(response.status_code, 200)
@@ -598,7 +608,7 @@ class SteamCmdSecretTests(TestCase):
             patch("main.views.InstanceTask.objects.filter") as task_bindings,
             patch("main.views.AsyncResult", return_value=failed_task),
         ):
-            task_bindings.return_value.first.return_value = SimpleNamespace(superseded_at=None)
+            task_bindings.return_value.first.return_value = task_binding
             response = InstancesViewset().task_status(request, task_id="fake-task")
 
         self.assertEqual(response.data["result"], {"status": "Nie udało się wykonać zadania."})
@@ -612,39 +622,10 @@ class SteamCmdSecretTests(TestCase):
             patch("main.views.InstanceTask.objects.filter") as task_bindings,
             patch("main.views.AsyncResult", return_value=failed_task),
         ):
-            task_bindings.return_value.first.return_value = SimpleNamespace(superseded_at=None)
+            task_bindings.return_value.first.return_value = task_binding
             response = InstancesViewset().task_status(request, task_id="fake-task")
 
         self.assertEqual(response.data["result"], {"status": "Nie udało się wykonać zadania."})
-        self.assert_secrets_absent(str(response.data))
-
-    def test_download_enqueue_error_does_not_echo_exception_text(self) -> None:
-        instance = Mock(
-            id=1,
-            is_admin_instance=False,
-            name="unit",
-            preset=Mock(path="fake-preset"),
-        )
-        viewset = InstancesViewset()
-        viewset.request = Mock(user=Mock(username="alice"))
-        failure = RuntimeError(
-            f"enqueue failed with {STEAM_USERNAME} {STEAM_PASSWORD} "
-            f"{STEAM_SHARED_SECRET} {STEAM_GUARD_CODE}"
-        )
-
-        with (
-            patch.object(viewset, "_get_authorized_instance", return_value=instance),
-            patch("main.views.psutil.disk_usage", return_value=Mock(free=10**12)),
-            patch("main.views.config.get", return_value="/fake/mods"),
-            patch("main.views.enqueue_instance_task", side_effect=failure),
-        ):
-            response = viewset.download_mods(Mock(), pk=1)
-
-        self.assertEqual(response.status_code, 500)
-        self.assertEqual(
-            response.data["message"],
-            "Nie udało się rozpocząć zadania pobierania.",
-        )
         self.assert_secrets_absent(str(response.data))
 
     def test_celery_failure_result_and_logs_use_safe_diagnostics(self) -> None:
@@ -896,6 +877,84 @@ class SteamCmdSecretTests(TestCase):
                     self.assertNotIn("Command ", log_contents)
                     for spelling in credential_spellings(ESCAPED_STEAM_PASSWORD) | credential_spellings(ESCAPED_STEAM_USERNAME):
                         self.assertNotIn(spelling, log_contents)
+
+
+class DownloadEnqueueSecretApiTests(TransactionTestCase):
+    def assert_secrets_absent(self, value: str) -> None:
+        for secret in (
+            STEAM_USERNAME,
+            STEAM_PASSWORD,
+            STEAM_SHARED_SECRET,
+            STEAM_GUARD_CODE,
+        ):
+            self.assertNotIn(secret, value)
+
+    def test_download_enqueue_error_does_not_echo_exception_text(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            media_root = root / "media"
+            mods_directory = root / "mods"
+            media_root.mkdir()
+            mods_directory.mkdir()
+
+            with override_settings(MEDIA_ROOT=str(media_root)):
+                owner = get_user_model().objects.create_user(
+                    username="secret-download-owner",
+                    password="invented-password",
+                )
+                port = Ports.objects.create(
+                    port_number=26723,
+                    is_available=False,
+                )
+                instance = Instances.objects.create(
+                    name="secret-download-server",
+                    user=owner,
+                    preset=SimpleUploadedFile(
+                        "secret-download.html",
+                        b"<html><body>invented fixture</body></html>",
+                    ),
+                    port=port,
+                    lifecycle_state=Instances.LifecycleState.STOPPED,
+                )
+                client = APIClient()
+                client.force_authenticate(user=owner)
+                config_snapshot = {"paths": {"mods_directory": str(mods_directory)}}
+                failure = RuntimeError(
+                    f"enqueue failed with {STEAM_USERNAME} {STEAM_PASSWORD} "
+                    f"{STEAM_SHARED_SECRET} {STEAM_GUARD_CODE}"
+                )
+
+                with (
+                    patch("main.views.config.snapshot", return_value=config_snapshot),
+                    patch(
+                        "main.views.psutil.disk_usage",
+                        return_value=SimpleNamespace(free=10**12),
+                    ),
+                    patch(
+                        "main.views.download_mods_task.apply_async",
+                        side_effect=failure,
+                    ) as publish,
+                ):
+                    response = client.post(
+                        f"/api/instances/{instance.pk}/download_mods/",
+                        {},
+                        format="json",
+                    )
+
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(
+                response.data["message"],
+                "Nie udało się rozpocząć zadania pobierania.",
+            )
+            self.assert_secrets_absent(str(response.data))
+            publish.assert_called_once()
+            self.assertEqual(
+                publish.call_args.kwargs["kwargs"],
+                {"instance_id": instance.pk},
+            )
+            task_id = publish.call_args.kwargs["task_id"]
+            self.assertTrue(task_id)
+            self.assertFalse(InstanceTask.objects.filter(pk=task_id).exists())
 
 
 if __name__ == "__main__":

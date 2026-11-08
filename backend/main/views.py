@@ -25,6 +25,7 @@ from .utils.operation_logging import operation_loggers
 from celery.result import AsyncResult
 from .tasks import *
 from .instance_tasks import create_instance_task_binding, dispatch_instance_task
+from .download_jobs import DownloadAdmissionError, reserve_download
 from .instance_lifecycle import (
     RESERVED_LIFECYCLE_STATES,
     StopReservationRejected,
@@ -853,7 +854,12 @@ class InstancesViewset(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], url_path='download_mods')
     def download_mods(self, request, pk=None):
-        """Enqueue Steam Workshop downloads for the instance preset."""
+        """Reserve and enqueue one durable Steam Workshop download."""
+        try:
+            instance = self._get_authorized_instance(pk)
+        except Http404:
+            return Response({"message": "Instancja nie została znaleziona"}, status=404)
+
         try:
             require_lifecycle_autocommit()
         except RuntimeError:
@@ -861,49 +867,67 @@ class InstancesViewset(viewsets.ModelViewSet):
                 {"message": "Nie udało się rozpocząć zadania pobierania."},
                 status=500,
             )
-        try:
-            instance = self._get_authorized_instance(pk)
-        except Http404:
-            return Response({"message": "Instancja nie została znaleziona"}, status=404)
-        if instance.is_admin_instance:
-            user = get_super_user()
-            if not user:
-                return Response({"message": "Nie znaleziono administratora."}, status=404)
-        else:
-            user = self.request.user
+
+        class _DownloadPreflightFailure(Exception):
+            def __init__(self, code):
+                self.code = code
+
+        def new_admission_preflight():
+            if instance.is_admin_instance and not get_super_user():
+                raise _DownloadPreflightFailure("admin_missing")
+
+            try:
+                config_snapshot = config.snapshot()
+                validate_instance_preset(instance, config_snapshot)
+                _snapshot_value(config_snapshot, "paths.mods_directory")
+            except (UnsafeManagedPathError, ManagedFileError):
+                raise
+            except Exception as exc:
+                raise _DownloadPreflightFailure("preset_verification") from exc
+
+            disk = psutil.disk_usage("/")
+            if disk.free < 20 * 1024 * 1024 * 1024:
+                raise _DownloadPreflightFailure("disk_full")
 
         try:
-            config_snapshot = config.snapshot()
-            preset_path = validate_instance_preset(instance, config_snapshot)
-            mods_directory = _snapshot_value(config_snapshot, "paths.mods_directory")
-        except UnsafeManagedPathError:
-            return _managed_path_error("Plik preset wymaga weryfikacji przez administratora.")
-        except ManagedFileError:
-            return Response({"message": "Plik preset instancji nie istnieje."}, status=400)
-        except Exception:
-            return _operation_error("Nie udało się zweryfikować pliku preset.")
-            
-        disk = psutil.disk_usage("/")
-        if disk.free < 20 * 1024 * 1024 * 1024:
-            return Response({"message": "Brak miejsca na dysku. Skontaktuj sie z administratorem."}, status=400)
-        
-        try:
-            task_id = enqueue_instance_task(
-                instance,
-                InstanceTask.Kind.DOWNLOAD,
-                download_mods_task,
-                kwargs={
-                    "instance_id": instance.id,
-                    "user": user.username,
-                    "name": instance.name,
-                    "file_path": preset_path,
-                    "mods_directory": mods_directory,
-                },
+            binding, reused = reserve_download(
+                instance.pk,
+                preflight=new_admission_preflight,
             )
-        except InstanceLifecycleBusy:
+        except DownloadAdmissionError as exc:
+            return Response({"message": str(exc)}, status=exc.status_code)
+        except UnsafeManagedPathError:
+            return _managed_path_error(
+                "Plik preset wymaga weryfikacji przez administratora."
+            )
+        except ManagedFileError:
             return Response(
-                {"message": "Nie można pobierać modów podczas aktywnej operacji instancji."},
+                {"message": "Plik preset instancji nie istnieje."},
                 status=400,
+            )
+        except _DownloadPreflightFailure as exc:
+            if exc.code == "admin_missing":
+                return Response({"message": "Nie znaleziono administratora."}, status=404)
+            if exc.code == "disk_full":
+                return Response(
+                    {"message": "Brak miejsca na dysku. Skontaktuj sie z administratorem."},
+                    status=400,
+                )
+            return _operation_error("Nie udało się zweryfikować pliku preset.")
+        except Exception:
+            return Response(
+                {"message": "Nie udało się rozpocząć zadania pobierania."},
+                status=500,
+            )
+
+        if reused:
+            return Response({"task_id": binding.task_id}, status=202)
+
+        try:
+            task_id = dispatch_instance_task(
+                binding,
+                download_mods_task,
+                kwargs={"instance_id": instance.pk},
             )
         except Exception:
             return Response(
@@ -935,20 +959,99 @@ class InstancesViewset(viewsets.ModelViewSet):
                 status=200,
             )
 
+        attention_status = "Stan zadania wymaga ręcznej weryfikacji przez administratora."
+
+        def attention_response():
+            return Response(
+                {
+                    "id": task_id,
+                    "state": "REQUIRES_ATTENTION",
+                    "result": {"status": attention_status},
+                },
+                status=200,
+            )
+
+        def superseded_response():
+            return Response(
+                {
+                    "id": task_id,
+                    "state": "REVOKED",
+                    "result": {"status": "Zadanie zostało zastąpione przez nowszą próbę zatrzymania."},
+                },
+                status=200,
+            )
+
+        if binding.requires_attention:
+            return attention_response()
+
         task_result = AsyncResult(task_id)
-        if not task_result:
-            return Response({"message": "Zadanie nie zostało znalezione"}, status=404)
+        backend_state = task_result.status if task_result else "PENDING"
+
+        if backend_state == "PENDING" or not task_result:
+            with transaction.atomic():
+                current_binding = InstanceTask.objects.select_for_update().filter(
+                    pk=task_id
+                ).first()
+                if current_binding is None:
+                    return Response({"message": "Zadanie nie zostało znalezione"}, status=404)
+                if current_binding.superseded_at is not None:
+                    return superseded_response()
+                if current_binding.requires_attention:
+                    return attention_response()
+                if current_binding.finished_at is not None:
+                    InstanceTask.objects.filter(
+                        pk=task_id,
+                        finished_at__isnull=False,
+                        superseded_at__isnull=True,
+                        requires_attention=False,
+                    ).delete()
+                    return Response({"message": "Zadanie nie zostało znalezione"}, status=404)
+
+            return Response(
+                {"id": task_id, "state": backend_state, "result": None},
+                status=200,
+            )
+
+        terminal_states = {"SUCCESS", "FAILURE", "REVOKED"}
+        if (
+            binding.kind == InstanceTask.Kind.DOWNLOAD
+            and binding.finished_at is None
+            and backend_state in terminal_states
+        ):
+            with lifecycle_transaction():
+                current_binding = InstanceTask.objects.select_for_update().filter(
+                    pk=task_id
+                ).first()
+                if current_binding is None:
+                    return Response({"message": "Zadanie nie zostało znalezione"}, status=404)
+                if current_binding.superseded_at is not None:
+                    return superseded_response()
+                if current_binding.requires_attention:
+                    return attention_response()
+                if (
+                    current_binding.kind == InstanceTask.Kind.DOWNLOAD
+                    and current_binding.finished_at is None
+                ):
+                    current_binding.requires_attention = True
+                    current_binding.attention_reason = (
+                        InstanceTask.AttentionReason.WORKER_STATE_UNVERIFIED
+                    )
+                    current_binding.save(
+                        update_fields=("requires_attention", "attention_reason")
+                    )
+                    return attention_response()
+                binding = current_binding
 
         res = task_result.result
-        if isinstance(res, Exception) or task_result.status == "FAILURE":
+        if isinstance(res, Exception) or backend_state == "FAILURE":
             # Older failures and generic exceptions may contain command arguments.
             # Keep the existing shape with an allowlisted message independent of
             # the exception or result value provided by the backend.
             res = {"status": "Nie udało się wykonać zadania."}
-            
+
         result = {
             "id": task_id,
-            "state": task_result.status,
+            "state": backend_state,
             "result": res
         }
         return Response(result, status=200)

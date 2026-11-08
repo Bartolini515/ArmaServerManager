@@ -132,14 +132,21 @@ class DownloadAttentionStateTests(TransactionTestCase):
         instance_output = InstanceSerializer(instance).data
 
         self.client.force_authenticate(user=self.owner)
-        result = SimpleNamespace(status="SUCCESS", result={"status": "completed"})
-        with patch("main.views.AsyncResult", return_value=result):
+        with patch(
+            "main.views.AsyncResult",
+            side_effect=AssertionError("attention status must not query AsyncResult"),
+        ) as async_result:
             response = self.client.get(
                 f"/api/instances/task_status/{binding.task_id}/"
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["result"], {"status": "completed"})
+        self.assertEqual(response.data["state"], "REQUIRES_ATTENTION")
+        self.assertEqual(
+            response.data["result"],
+            {"status": "Stan zadania wymaga ręcznej weryfikacji przez administratora."},
+        )
+        async_result.assert_not_called()
         safe_outputs = f"{instance_output!r} {response.data!r} {str(binding)!r}"
         for private_value in (
             "requires_attention",
