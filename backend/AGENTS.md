@@ -9,7 +9,7 @@ Read the root [AGENTS.md](../AGENTS.md) first, then use [architecture](../docs/a
 ## Backend rules
 
 - Treat `backend/main/migrations/` as immutable history. Add a new migration for schema changes; never rewrite an applied migration.
-- Do not run Django tests against a real or shared MySQL database. The safe check intentionally skips them until an isolated test configuration exists.
+- Do not run Django tests against a real or shared database, through default `manage.py test`, or with production settings. Run relevant backend behavior tests separately from the repository root with `PIPENV_DONT_LOAD_ENV=1 pipenv run python scripts/test_backend.py` in POSIX shells, or `$env:PIPENV_DONT_LOAD_ENV = '1'; pipenv run python scripts/test_backend.py` in PowerShell. Both commands prevent Pipenv from loading `.env` and select the isolated runner.
 - Do not invoke SteamCMD, generated shell scripts, Arma processes, `psutil` termination, or production filesystem cleanup during automated checks.
 - Do not read real `backend/.env`, `backend/data/config.json`, media, logs, or credentials. Use invented temporary values and files.
 - Preserve API response shapes, Polish error messages, trailing-slash routing, and Knox authentication unless a behavior change is explicitly requested.
@@ -18,3 +18,19 @@ Read the root [AGENTS.md](../AGENTS.md) first, then use [architecture](../docs/a
 ## Verification
 
 Use `pipenv run check` from the repository root. It performs dependency validation, documentation tests, syntax compilation, frontend checks, and `git diff --check`; it does not connect to MySQL, Redis, Steam, or Arma.
+
+The default safe check skips Django tests. For relevant backend behavior tests, run one of these commands from the repository root.
+
+POSIX shells:
+
+```sh
+PIPENV_DONT_LOAD_ENV=1 pipenv run python scripts/test_backend.py
+```
+
+PowerShell:
+
+```powershell
+$env:PIPENV_DONT_LOAD_ENV = '1'; pipenv run python scripts/test_backend.py
+```
+
+The runner uses an in-memory SQLite database and disposable configuration and filesystem paths under a temporary directory. It guards protected repository runtime data paths and blocks external network, subprocess, and host process operations. Do not use default `manage.py test` or production settings for backend tests.

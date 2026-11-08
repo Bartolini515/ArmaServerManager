@@ -54,8 +54,10 @@ def run_checks(
     failures: list[str] = []
 
     print(
-        "backend tests: SKIPPED (an isolated test database is not configured; "
-        "see docs/known-risks.md)",
+        "backend tests: SKIPPED by default. Run isolated Django tests separately:\n"
+        "  POSIX: `PIPENV_DONT_LOAD_ENV=1 pipenv run python scripts/test_backend.py`\n"
+        "  PowerShell: `$env:PIPENV_DONT_LOAD_ENV = '1'; pipenv run python "
+        "scripts/test_backend.py`",
         flush=True,
     )
 
@@ -72,7 +74,14 @@ def run_checks(
         print(f"\nFailed checks: {', '.join(failures)}", flush=True)
         return 1
 
-    print("\nAll safe checks passed. Backend Django tests were skipped.", flush=True)
+    print(
+        "\nAll safe checks passed. Backend Django tests were skipped by default.\n"
+        "Run isolated backend tests separately:\n"
+        "  POSIX: `PIPENV_DONT_LOAD_ENV=1 pipenv run python scripts/test_backend.py`\n"
+        "  PowerShell: `$env:PIPENV_DONT_LOAD_ENV = '1'; pipenv run python "
+        "scripts/test_backend.py`",
+        flush=True,
+    )
     return 0
 
 
