@@ -8,6 +8,8 @@ from copy import copy
 from datetime import datetime
 import logging
 from pathlib import Path
+import sys
+import threading
 import traceback
 from typing import Callable, TypeAlias
 from uuid import uuid4
@@ -91,6 +93,80 @@ def _formatter(
     return logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
 
 
+class _DeferredCloseFileHandler(logging.FileHandler):
+    """Close only after every already-admitted record has left the handler."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._deferred_state_lock = threading.Lock()
+        self._deferred_close_requested = False
+        self._deferred_active_records = 0
+        self._deferred_close_started = False
+
+    def handle(self, record: logging.LogRecord) -> bool:
+        accepted = self.filter(record)
+        if not accepted:
+            return accepted
+
+        with self._deferred_state_lock:
+            if self._deferred_close_requested:
+                return False
+            # Admission is the linearization point. The call remains accounted
+            # for even if it waits on the FileHandler lock or its emit blocks.
+            self._deferred_active_records += 1
+
+        try:
+            self.acquire()
+            try:
+                self.emit(record)
+            finally:
+                self.release()
+        finally:
+            close_now = False
+            with self._deferred_state_lock:
+                self._deferred_active_records -= 1
+                if (
+                    self._deferred_close_requested
+                    and self._deferred_active_records == 0
+                    and not self._deferred_close_started
+                ):
+                    self._deferred_close_started = True
+                    close_now = True
+            if close_now:
+                self._close_deferred()
+        return accepted
+
+    def defer_close(self) -> None:
+        close_now = False
+        with self._deferred_state_lock:
+            self._deferred_close_requested = True
+            if self._deferred_active_records == 0 and not self._deferred_close_started:
+                self._deferred_close_started = True
+                close_now = True
+
+        # Remove the detached handler from logging.shutdown's registry too;
+        # shutdown must not reintroduce a wait on its active emit lock.
+        remove_handler_ref = getattr(logging, "_removeHandlerRef", None)
+        if callable(remove_handler_ref):
+            for handler_ref in tuple(getattr(logging, "_handlerList", ())):
+                try:
+                    if handler_ref() is self:
+                        remove_handler_ref(handler_ref)
+                except Exception:
+                    continue
+
+        if close_now:
+            self._close_deferred()
+
+    def _close_deferred(self) -> None:
+        try:
+            super().close()
+        except Exception:
+            # Deferred close must not replace the task's already-recorded
+            # cleanup uncertainty or escape from a reader callback thread.
+            pass
+
+
 @contextmanager
 def operation_loggers(
     logs_directory: str | Path,
@@ -99,13 +175,16 @@ def operation_loggers(
     *,
     grouped: bool = False,
     secret_redactor: SteamSecretRedactor | None = None,
+    defer_close_on_exception: bool | Callable[[BaseException], bool] = False,
 ) -> Iterator[dict[str, logging.LoggerAdapter]]:
     """Create and close standard-library loggers for one application operation.
 
     ``grouped`` creates a run directory shared by all requested operation
     loggers. Otherwise each operation writes directly below ``logs_directory``.
     Operation files are created when the context opens; the shared error file
-    is opened lazily only after an error record is emitted.
+    is opened lazily only after an error record is emitted. Explicit deferred
+    close mode applies only when an exception exits the context; admitted
+    records finish on their existing caller threads, without a cleanup thread.
     """
     base_directory = Path(logs_directory)
     base_directory.mkdir(parents=True, exist_ok=True)
@@ -126,7 +205,12 @@ def operation_loggers(
         output_directory = base_directory
         error_path = output_directory / f"errors_{timestamp}.txt"
 
-    error_handler = logging.FileHandler(
+    handler_type = (
+        _DeferredCloseFileHandler
+        if defer_close_on_exception is not False
+        else logging.FileHandler
+    )
+    error_handler = handler_type(
         error_path,
         mode="a",
         encoding="utf-8",
@@ -145,7 +229,7 @@ def operation_loggers(
                 if grouped
                 else f"log_{operation}_{timestamp}.txt"
             )
-            operation_handler = logging.FileHandler(
+            operation_handler = handler_type(
                 operation_path,
                 mode="a",
                 encoding="utf-8",
@@ -167,9 +251,27 @@ def operation_loggers(
 
         yield adapters
     finally:
+        current_exception = sys.exc_info()[1]
+        defer_close = False
+        if current_exception is not None:
+            if callable(defer_close_on_exception):
+                try:
+                    defer_close = bool(defer_close_on_exception(current_exception))
+                except Exception:
+                    defer_close = False
+            else:
+                defer_close = bool(defer_close_on_exception)
+
         for logger in loggers:
             for handler in tuple(logger.handlers):
                 logger.removeHandler(handler)
-        for handler in handlers:
-            handler.close()
-        error_handler.close()
+        if defer_close:
+            for handler in (*handlers, error_handler):
+                if isinstance(handler, _DeferredCloseFileHandler):
+                    handler.defer_close()
+                else:
+                    handler.close()
+        else:
+            for handler in handlers:
+                handler.close()
+            error_handler.close()

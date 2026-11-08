@@ -123,12 +123,16 @@ def terminate_owned_process_tree(
     process: subprocess.Popen,
     *,
     grace_seconds: float = 1.0,
+    close_pipes: bool = True,
 ) -> bool:
     """Terminate only verified process identities and report uncertain trees.
 
     Individual identities are checked immediately before each signal. Numeric
     process-group signaling is deliberately avoided because a PGID has no
-    durable handle and may be recycled after its original leader exits.
+    durable handle and may be recycled after its original leader exits. When
+    ``close_pipes`` is false, caller-owned reader threads retain and close
+    their pipe handles after their reads return; process identity cleanup does
+    not wait for buffered-reader locks.
     """
     if process is None:
         return False
@@ -185,13 +189,14 @@ def terminate_owned_process_tree(
     except Exception:
         complete = False
     finally:
-        for stream_name in ("stdout", "stderr"):
-            try:
-                stream = getattr(process, stream_name, None)
-                if stream is not None:
-                    stream.close()
-            except Exception:
-                complete = False
+        if close_pipes:
+            for stream_name in ("stdout", "stderr"):
+                try:
+                    stream = getattr(process, stream_name, None)
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    complete = False
 
     # Recheck captured identities after the Popen has been reaped. Do not
     # rescan by group number after losing the root lifetime proof.

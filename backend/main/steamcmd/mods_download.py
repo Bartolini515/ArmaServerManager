@@ -2,9 +2,12 @@ import copy
 import math
 import os
 import subprocess
-from time import sleep, time
+import threading
+from time import monotonic, sleep, time
 from typing import Any, Callable
+from ..download_leases import LeaseLostError
 from ..utils.process_output import stream_process_output
+from ..utils.process_output import ProcessOutputCancelledError
 from ..utils.config import config
 from ..utils.operation_logging import LogCallback
 from ..utils.steam_errors import (
@@ -32,6 +35,72 @@ class DownloadResult(list[str]):
         self.cleanup_reason = "filesystem_cleanup_pending"
 
 
+def _require_not_cancelled(cancel_check: Callable[[], bool] | None) -> None:
+    if cancel_check is None:
+        return
+    try:
+        cancelled = bool(cancel_check())
+    except Exception:
+        cancelled = True
+    if cancelled:
+        raise LeaseLostError() from None
+
+
+def _before_shared_write(
+    cancel_check: Callable[[], bool] | None,
+    before_shared_write: Callable[[], None] | None,
+) -> None:
+    _require_not_cancelled(cancel_check)
+    if before_shared_write is not None:
+        before_shared_write()
+
+
+def _cancel_aware_callback(
+    callback: Callable[..., Any] | None,
+    cancel_check: Callable[[], bool] | None,
+) -> Callable[..., Any] | None:
+    if callback is None or cancel_check is None:
+        return callback
+
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            if cancel_check():
+                return None
+        except Exception:
+            return None
+        return callback(*args, **kwargs)
+
+    return guarded
+
+
+def _cancellation_kwargs(
+    cancel_check: Callable[[], bool] | None,
+    before_shared_write: Callable[[], None] | None = None,
+) -> dict[str, Callable[..., Any]]:
+    kwargs: dict[str, Callable[..., Any]] = {}
+    if cancel_check is not None:
+        kwargs["cancel_check"] = cancel_check
+    if before_shared_write is not None:
+        kwargs["before_shared_write"] = before_shared_write
+    return kwargs
+
+
+def _interruptible_wait(
+    seconds: float,
+    cancel_check: Callable[[], bool] | None,
+) -> None:
+    if cancel_check is None:
+        sleep(seconds)
+        return
+    remaining = max(0.0, float(seconds))
+    while remaining > 0:
+        _require_not_cancelled(cancel_check)
+        interval = min(0.25, remaining)
+        sleep(interval)
+        remaining -= interval
+    _require_not_cancelled(cancel_check)
+
+
 def assign_new_steamguard(
     steamguard: str | None,
     buffer_seconds: int = 7,
@@ -39,6 +108,7 @@ def assign_new_steamguard(
     error_callback: LogCallback | None = None,
     secret_redactor: SteamSecretRedactor | None = None,
     config_snapshot: dict[str, Any] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> str:
     """Generate a new Steam Guard code using the supplied config snapshot."""
     snapshot = _configuration_snapshot(config_snapshot)
@@ -55,6 +125,8 @@ def assign_new_steamguard(
     redactor.add_secret(steam_auth.get("shared_secret", ""))
     safe_log_callback = redactor.callback(log_callback)
     safe_error_callback = redactor.callback(error_callback)
+    safe_log_callback = _cancel_aware_callback(safe_log_callback, cancel_check)
+    safe_error_callback = _cancel_aware_callback(safe_error_callback, cancel_check)
 
     def _get_time_until_next_steamguard_change() -> float:
         """Get the time in seconds until the next Steam Guard code change.
@@ -76,6 +148,7 @@ def assign_new_steamguard(
 
     # Generate a new Steam Guard code, ensuring it's different from the previous one
     for _ in range(10):  # Retry up to 10 times
+        _require_not_cancelled(cancel_check)
         new_code = _new_steamguard_code()
         if new_code != steamguard or new_code == "":
             redactor.add_secret(new_code)
@@ -83,7 +156,7 @@ def assign_new_steamguard(
         time_until_change = _get_time_until_next_steamguard_change() + buffer_seconds
         if safe_log_callback:
             safe_log_callback(f"Waiting {time_until_change:.1f}s to generate new Steam Guard code...")
-        sleep(time_until_change)
+        _interruptible_wait(time_until_change, cancel_check)
     return ""
 
 def download_mods(
@@ -95,6 +168,8 @@ def download_mods(
     progress_callback: Callable[[int, int], None] | None = None,
     secret_redactor: SteamSecretRedactor | None = None,
     config_snapshot: dict[str, Any] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    before_shared_write: Callable[[], None] | None = None,
 ) -> list[str] | None:
     """Downloads mods using SteamCMD.
 
@@ -110,6 +185,10 @@ def download_mods(
             function to report download progress.
         config_snapshot (dict, optional): One stable application configuration
             snapshot to use for paths, credentials and Steam Guard generation.
+        cancel_check (callable, optional): Returns whether the current lease
+            has been lost, including while a subprocess produces no output.
+        before_shared_write (callable, optional): Synchronously renews the
+            lease and verifies the durable claim before a shared mutation.
 
     Returns:
         list[str]: A list containing mods that failed to download, if any.
@@ -140,25 +219,36 @@ def download_mods(
     redactor.add_secret(password)
     safe_log_callback = redactor.callback(log_callback)
     safe_error_callback = redactor.callback(error_callback)
+    safe_log_callback = _cancel_aware_callback(safe_log_callback, cancel_check)
+    safe_error_callback = _cancel_aware_callback(safe_error_callback, cancel_check)
     steamguard = assign_new_steamguard(
         steamguard=steamguard,
         log_callback=safe_log_callback,
         error_callback=safe_error_callback,
         secret_redactor=redactor,
         config_snapshot=snapshot,
+        **_cancellation_kwargs(cancel_check),
     )
     redactor.add_secret(steamguard)
     if safe_log_callback:
         safe_log_callback('Loaded login credentials.')
     
+    _before_shared_write(cancel_check, before_shared_write)
     delete_steamcmd_appcache(steamcmd_dir, safe_log_callback)
 
-    ghost_folder = GhostFolder(name=name, path=download_dir, log_callback=safe_log_callback)
+    _before_shared_write(cancel_check, before_shared_write)
+    ghost_folder = GhostFolder(
+        name=name,
+        path=download_dir,
+        log_callback=safe_log_callback,
+        **_cancellation_kwargs(cancel_check, before_shared_write),
+    )
     primary_failure = False
     cleanup_uncertain = False
     claimed_success = False
     result: DownloadResult | None = None
     try:
+        _before_shared_write(cancel_check, before_shared_write)
         if not test_connection(
             steamcmd_dir,
             login,
@@ -166,13 +256,16 @@ def download_mods(
             steamguard,
             safe_log_callback,
             secret_redactor=redactor,
+            **_cancellation_kwargs(cancel_check, before_shared_write),
         ):
             raise Exception("Nie udało się połączyć z SteamCMD. Sprawdź dane logowania lub połączenie internetowe.")
 
         if progress_callback:
+            _require_not_cancelled(cancel_check)
             progress_callback(0, len(mods_to_download))
 
         for i in range(math.ceil(len(mods_to_download) / lim)):
+            _require_not_cancelled(cancel_check)
             batch = mods_to_download[i * lim:min((i + 1) * lim, len(mods_to_download))]
 
             steamguard = assign_new_steamguard(
@@ -181,9 +274,11 @@ def download_mods(
                 error_callback=safe_error_callback,
                 secret_redactor=redactor,
                 config_snapshot=snapshot,
+                **_cancellation_kwargs(cancel_check),
             )
             redactor.add_secret(steamguard)
 
+            _before_shared_write(cancel_check, before_shared_write)
             return_code = steamcmd_download(
                 mod=batch,
                 appid=appid,
@@ -194,11 +289,12 @@ def download_mods(
                 steamguard=steamguard,
                 log_callback=safe_log_callback,
                 secret_redactor=redactor,
+                **_cancellation_kwargs(cancel_check, before_shared_write),
             )
 
             if return_code == 84:
                 failed_mods.extend(batch)
-                sleep(600)
+                _interruptible_wait(600, cancel_check)
                 continue
             elif return_code == 0:
                 claimed_success = True
@@ -209,6 +305,7 @@ def download_mods(
                     error_callback=safe_error_callback,
                     secret_redactor=redactor,
                     config_snapshot=snapshot,
+                    **_cancellation_kwargs(cancel_check),
                 )
                 redactor.add_secret(steamguard)
                 for mod in batch:
@@ -224,6 +321,7 @@ def download_mods(
                         error_callback=safe_error_callback,
                         secret_redactor=redactor,
                         config_snapshot=snapshot,
+                        **_cancellation_kwargs(cancel_check, before_shared_write),
                     ):
                         failed_mods.append(mod)
                         if safe_error_callback:
@@ -233,15 +331,18 @@ def download_mods(
                     else:
                         claimed_success = True
             if progress_callback:
+                _require_not_cancelled(cancel_check)
                 progress_callback(min((i + 1) * lim, len(mods_to_download)), len(mods_to_download))
 
         if not (failed_mods and not claimed_success):
             for wid in mods_to_download:
+                _before_shared_write(cancel_check, before_shared_write)
                 lowercase_addons_directory(
                     wid,
                     os.path.join(ghost_folder.ghost_folder_path, "steamapps/workshop/content/107410"),
                     log_callback=safe_log_callback,
                 )
+            _before_shared_write(cancel_check, before_shared_write)
             ghost_folder.move_files(destination_path=mods_dir, internal_path="steamapps/workshop/content/107410")
 
         if failed_mods:
@@ -295,6 +396,8 @@ def steamcmd_download(
     log_callback: LogCallback | None = None,
     is_retry: bool = False,
     secret_redactor: SteamSecretRedactor | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    before_shared_write: Callable[[], None] | None = None,
 ) -> int:
     """Download a mod using SteamCMD.
 
@@ -334,10 +437,12 @@ def steamcmd_download(
     redactor.add_secret(password)
     redactor.add_secret(steamguard)
     safe_log_callback = redactor.callback(log_callback)
+    safe_log_callback = _cancel_aware_callback(safe_log_callback, cancel_check)
 
     error: SteamCommandError | None = None
     diagnostic = ""
     process_exception: BaseException | None = None
+    _before_shared_write(cancel_check, before_shared_write)
     try:
         process = start_process(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as exc:
@@ -346,6 +451,9 @@ def steamcmd_download(
             "Nie udało się uruchomić SteamCMD. Sprawdź logi operacji.",
             diagnostic=diagnostic,
         )
+    except BaseException as exc:
+        # The child may have started before an asynchronous interruption.
+        raise CleanupUncertainError(exc) from None
     if error is not None:
         if safe_log_callback and diagnostic:
             safe_log_callback(f"SteamCMD error: {diagnostic}")
@@ -358,7 +466,16 @@ def steamcmd_download(
             process,
             safe_log_callback,
             secret_redactor=redactor,
+            **_cancellation_kwargs(cancel_check),
         )
+    except ProcessOutputCancelledError as exc:
+        process_exception = exc
+        cleanup_complete = _cleanup_owned_process(process, close_pipes=False)
+        readers_complete = exc.readers_quiesced(timeout=1.0)
+        if not cleanup_complete or not readers_complete:
+            uncertain = CleanupUncertainError(exc)
+            raise uncertain from None
+        raise LeaseLostError() from None
     except SteamCommandError as exc:
         process_exception = exc
         diagnostic = safe_steam_diagnostic(exc, redactor)
@@ -377,11 +494,24 @@ def steamcmd_download(
             "Nie udało się odczytać wyjścia SteamCMD.",
             diagnostic=diagnostic,
         )
+    except BaseException as exc:
+        process_exception = exc
+        cleanup_complete = _cleanup_owned_process(process)
+        if not cleanup_complete:
+            uncertain = CleanupUncertainError(exc)
+            if cancel_check is None:
+                _best_effort_process_log(safe_log_callback, uncertain.diagnostic)
+            raise uncertain from None
+        raise SteamCommandError(
+            "Nie udało się odczytać wyjścia SteamCMD.",
+            diagnostic="SteamCMD output supervision was interrupted",
+        ) from None
     if error is not None:
         if not cleanup_complete:
             original_exception = process_exception if process_exception is not None else error
             uncertain = CleanupUncertainError(original_exception)
-            _best_effort_process_log(safe_log_callback, uncertain.diagnostic)
+            if cancel_check is None:
+                _best_effort_process_log(safe_log_callback, uncertain.diagnostic)
             raise uncertain from None
         if safe_log_callback and diagnostic:
             safe_log_callback(f"SteamCMD error: {diagnostic}")
@@ -401,6 +531,8 @@ def download_fallback(
     error_callback: LogCallback | None = None,
     secret_redactor: SteamSecretRedactor | None = None,
     config_snapshot: dict[str, Any] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    before_shared_write: Callable[[], None] | None = None,
 ) -> str | None:
     """Attempt to download failed mod again.
 
@@ -436,21 +568,26 @@ def download_fallback(
     redactor.add_secret(password)
     redactor.add_secret(steamguard)
     safe_log_callback = redactor.callback(log_callback)
+    safe_log_callback = _cancel_aware_callback(safe_log_callback, cancel_check)
     safe_error_callback = redactor.callback(error_callback)
+    safe_error_callback = _cancel_aware_callback(safe_error_callback, cancel_check)
 
     stop_time = time() + 7200  # 120 minutes timeout
     while time() < stop_time:
+        _require_not_cancelled(cancel_check)
         if safe_log_callback:
             safe_log_callback(f"Retrying download for mod {mod}...")
-        sleep(60)
+        _interruptible_wait(60, cancel_check)
         steamguard = assign_new_steamguard(
             steamguard=steamguard,
             log_callback=safe_log_callback,
             error_callback=safe_error_callback,
             secret_redactor=redactor,
             config_snapshot=snapshot,
+            **_cancellation_kwargs(cancel_check),
         )
         redactor.add_secret(steamguard)
+        _before_shared_write(cancel_check, before_shared_write)
         return_code = steamcmd_download(
             mod=mod,
             appid=appid,
@@ -462,6 +599,7 @@ def download_fallback(
             log_callback=safe_log_callback,
             is_retry=True,
             secret_redactor=redactor,
+            **_cancellation_kwargs(cancel_check, before_shared_write),
         )
         if return_code == 0:
             if safe_log_callback:
@@ -476,6 +614,8 @@ def test_connection(
     steamguard: str = None,
     log_callback: LogCallback | None = None,
     secret_redactor: SteamSecretRedactor | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    before_shared_write: Callable[[], None] | None = None,
 ) -> bool:
     """Test connection to SteamCMD.
 
@@ -493,6 +633,7 @@ def test_connection(
     redactor.add_secret(password)
     redactor.add_secret(steamguard)
     safe_log_callback = redactor.callback(log_callback)
+    safe_log_callback = _cancel_aware_callback(safe_log_callback, cancel_check)
 
     args = ['bash', f'{os.path.join(steamcmd_dir, "steamcmd.sh")}']
     if steamguard:
@@ -501,6 +642,7 @@ def test_connection(
     args.append("+quit")
 
     process = None
+    _before_shared_write(cancel_check, before_shared_write)
     try:
         process = start_process(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as exc:
@@ -512,15 +654,28 @@ def test_connection(
         if safe_log_callback and diagnostic:
             safe_log_callback(f"SteamCMD connection error: {diagnostic}")
         raise error from None
+    except BaseException as exc:
+        raise CleanupUncertainError(exc) from None
 
     try:
-        process.communicate(timeout=10)
+        if cancel_check is None:
+            process.communicate(timeout=10)
+        else:
+            _communicate_with_cancellation(process, cancel_check)
     except Exception as exc:
-        cleanup_complete = _cleanup_owned_process(process)
+        cleanup_complete = _cleanup_communicate_process(process)
+        if isinstance(exc, LeaseLostError):
+            if not cleanup_complete:
+                uncertain = CleanupUncertainError(exc)
+                if cancel_check is None:
+                    _best_effort_process_log(safe_log_callback, uncertain.diagnostic)
+                raise uncertain from None
+            raise LeaseLostError() from None
         diagnostic = _with_cleanup_status(safe_steam_diagnostic(exc, redactor), cleanup_complete)
         if not cleanup_complete:
             uncertain = CleanupUncertainError(exc)
-            _best_effort_process_log(safe_log_callback, uncertain.diagnostic)
+            if cancel_check is None:
+                _best_effort_process_log(safe_log_callback, uncertain.diagnostic)
             raise uncertain from None
         if safe_log_callback and diagnostic:
             safe_log_callback(f"SteamCMD connection error: {diagnostic}")
@@ -528,8 +683,32 @@ def test_connection(
             "Nie udało się połączyć z SteamCMD. Sprawdź logi operacji.",
             diagnostic=diagnostic,
         ) from None
+    except BaseException as exc:
+        cleanup_complete = _cleanup_communicate_process(process)
+        if not cleanup_complete:
+            uncertain = CleanupUncertainError(exc)
+            if cancel_check is None:
+                _best_effort_process_log(safe_log_callback, uncertain.diagnostic)
+            raise uncertain from None
+        raise SteamCommandError(
+            "Nie udało się połączyć z SteamCMD. Sprawdź logi operacji.",
+            diagnostic="SteamCMD connection supervision was interrupted",
+        ) from None
 
     return process.returncode == 0
+
+
+def _communicate_with_cancellation(process, cancel_check: Callable[[], bool]) -> None:
+    remaining = 10.0
+    while remaining > 0:
+        _require_not_cancelled(cancel_check)
+        interval = min(0.25, remaining)
+        try:
+            process.communicate(timeout=interval)
+            return
+        except subprocess.TimeoutExpired:
+            remaining -= interval
+    raise subprocess.TimeoutExpired("SteamCMD", timeout=10)
 
 
 def _configuration_snapshot(config_snapshot: dict[str, Any] | None) -> dict[str, Any]:
@@ -538,11 +717,86 @@ def _configuration_snapshot(config_snapshot: dict[str, Any] | None) -> dict[str,
     return copy.deepcopy(snapshot)
 
 
-def _cleanup_owned_process(process) -> bool:
+def _cleanup_owned_process(process, *, close_pipes: bool = True) -> bool:
     try:
-        return terminate_owned_process_tree(process)
+        if close_pipes:
+            return terminate_owned_process_tree(process)
+        return terminate_owned_process_tree(process, close_pipes=False)
     except Exception:
         return False
+
+
+def _cleanup_communicate_process(process, *, reader_timeout: float = 1.0) -> bool:
+    """Reap the owned process, then boundedly account for communicate readers."""
+    try:
+        process_complete = _cleanup_owned_process(process, close_pipes=False)
+    except BaseException:
+        process_complete = False
+
+    try:
+        readers = _communicate_reader_threads(process)
+        if readers is None:
+            return False
+
+        deadline = monotonic() + max(0.0, reader_timeout)
+        for reader in readers:
+            # Popen can publish a Thread before start() succeeds. Its absence of
+            # an identity is not proof that no reader can still be started.
+            if reader.ident is None:
+                return False
+            reader.join(max(0.0, deadline - monotonic()))
+        readers_complete = not any(reader.is_alive() for reader in readers)
+    except BaseException:
+        # Reader discovery and quiescence are independent cleanup proofs. A
+        # failed probe must preserve uncertainty even if process cleanup also
+        # failed, without replacing the caller's primary exception.
+        return False
+
+    if not process_complete or not readers_complete:
+        return False
+
+    # Popen's Windows reader threads close their own streams. On selector-based
+    # platforms there are no background readers, so close only after process
+    # cleanup and the bounded reader check have established no concurrent read.
+    for stream_name in ("stdout", "stderr"):
+        stream = _process_attribute(process, stream_name)
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except BaseException:
+            return False
+    return True
+
+
+def _communicate_reader_threads(process) -> list[threading.Thread] | None:
+    """Return Popen's bounded reader set, or fail closed on unknown Windows state."""
+    try:
+        process_state = vars(process)
+    except TypeError:
+        return None
+
+    communication_started = process_state.get("_communication_started", False)
+    readers = []
+    for stream_name, reader_name in (
+        ("stdout", "stdout_thread"),
+        ("stderr", "stderr_thread"),
+    ):
+        if process_state.get(stream_name) is None:
+            continue
+        reader = process_state.get(reader_name)
+        if isinstance(reader, threading.Thread):
+            readers.append(reader)
+        elif os.name == "nt" and communication_started is not False:
+            return None
+    return readers
+
+
+def _process_attribute(process, name: str):
+    try:
+        return vars(process).get(name)
+    except TypeError:
+        return None
 
 
 def _best_effort_process_log(callback: LogCallback | None, message: str) -> None:

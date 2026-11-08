@@ -1,11 +1,13 @@
 from contextlib import ExitStack
 import ctypes
 import errno
+import io
 import os
 import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,8 +16,15 @@ from unittest.mock import Mock, patch
 import psutil
 
 from main.steamcmd import processes
-from main.steamcmd.mods_download import download_mods, test_connection
+from main.download_leases import LeaseLostError
+from main.steamcmd.mods_download import (
+    download_fallback,
+    download_mods,
+    steamcmd_download,
+    test_connection,
+)
 from main.utils.config import config
+from main.utils.process_output import stream_process_output
 from main.utils.steam_errors import SteamCommandError, SteamSecretRedactor
 import main.workaround.ghost_folder as ghost_folder_module
 from main.workaround.ghost_folder import GhostFolder, _atomic_publish
@@ -786,6 +795,811 @@ class DownloadLifecycleTests(unittest.TestCase):
         self.assertTrue(connected)
         process.communicate.assert_called_once_with(timeout=10)
 
+    def test_stream_cancellation_returns_while_both_readers_are_blocked(self) -> None:
+        class BlockingPipe:
+            def __init__(self):
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.closed = threading.Event()
+
+            def readline(self):
+                self.started.set()
+                self.release.wait()
+                return b""
+
+            def close(self):
+                self.closed.set()
+
+        stdout = BlockingPipe()
+        stderr = BlockingPipe()
+        process = SimpleNamespace(
+            stdout=stdout,
+            stderr=stderr,
+            poll=Mock(return_value=None),
+            wait=Mock(),
+        )
+        callback_messages: list[str] = []
+
+        def cancellation_observed():
+            return stdout.started.is_set() and stderr.started.is_set()
+
+        try:
+            with self.assertRaises(Exception) as raised:
+                stream_process_output(
+                    process,
+                    callback_messages.append,
+                    cancel_check=cancellation_observed,
+                )
+
+            self.assertEqual(type(raised.exception).__name__, "ProcessOutputCancelledError")
+            self.assertEqual(callback_messages, [])
+            process.wait.assert_not_called()
+        finally:
+            # Let any bounded reader workers finish after the supervisor has
+            # observed cancellation; the implementation must not join them
+            # while their pipes are still blocked.
+            stdout.release.set()
+            stderr.release.set()
+
+        self.assertTrue(stdout.closed.wait(1))
+        self.assertTrue(stderr.closed.wait(1))
+
+    def test_buffered_pipe_close_cannot_prevent_process_cleanup_on_cancellation(self) -> None:
+        class BlockingRawPipe(io.RawIOBase):
+            def __init__(self):
+                super().__init__()
+                self.read_started = threading.Event()
+                self.release_read = threading.Event()
+                self.raw_closed = threading.Event()
+
+            def readable(self):
+                return True
+
+            def readinto(self, buffer):
+                self.read_started.set()
+                self.release_read.wait()
+                return 0
+
+            def close(self):
+                self.raw_closed.set()
+                super().close()
+
+        stdout_raw = BlockingRawPipe()
+        stderr_raw = BlockingRawPipe()
+        process = SimpleNamespace(
+            stdout=io.BufferedReader(stdout_raw, buffer_size=1),
+            stderr=io.BufferedReader(stderr_raw, buffer_size=1),
+            returncode=None,
+        )
+        cleanup_reached = threading.Event()
+        worker_finished = threading.Event()
+        outcome: dict[str, BaseException] = {}
+
+        def cancellation_observed():
+            return stdout_raw.read_started.is_set() and stderr_raw.read_started.is_set()
+
+        def cleanup_owned_process(_process, **_kwargs):
+            cleanup_reached.set()
+            return False
+
+        def run_supervisor():
+            try:
+                steamcmd_download(
+                    "123456",
+                    107410,
+                    "fake-user",
+                    "fake-password",
+                    "/isolated/steamcmd",
+                    "/isolated/workspace",
+                    secret_redactor=SteamSecretRedactor(("fake-user", "fake-password")),
+                    cancel_check=cancellation_observed,
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                worker_finished.set()
+
+        with (
+            patch("main.steamcmd.mods_download.start_process", return_value=process),
+            patch(
+                "main.steamcmd.mods_download._cleanup_owned_process",
+                side_effect=cleanup_owned_process,
+            ),
+        ):
+            worker = threading.Thread(target=run_supervisor, daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(stdout_raw.read_started.wait(1))
+                self.assertTrue(stderr_raw.read_started.wait(1))
+                self.assertTrue(
+                    cleanup_reached.wait(2),
+                    "cancellation must reach owned-process cleanup while buffered reads remain blocked",
+                )
+                self.assertTrue(
+                    worker_finished.wait(2),
+                    "blocked readers must produce bounded cleanup uncertainty",
+                )
+                self.assertIsInstance(outcome.get("error"), processes.CleanupUncertainError)
+            finally:
+                # Always unblock both fake OS reads, including on the old broken implementation.
+                stdout_raw.release_read.set()
+                stderr_raw.release_read.set()
+                worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(stdout_raw.raw_closed.wait(1))
+        self.assertTrue(stderr_raw.raw_closed.wait(1))
+
+    def test_blocked_output_callback_does_not_delay_cleanup_or_allow_new_callbacks(self) -> None:
+        class LineRawPipe(io.RawIOBase):
+            def __init__(self, line):
+                super().__init__()
+                self._line = bytearray(line)
+                self.line_consumed = threading.Event()
+                self.raw_closed = threading.Event()
+
+            def readable(self):
+                return True
+
+            def readinto(self, buffer):
+                if not self._line:
+                    self.line_consumed.set()
+                    return 0
+                count = min(len(buffer), len(self._line))
+                buffer[:count] = self._line[:count]
+                del self._line[:count]
+                if not self._line:
+                    self.line_consumed.set()
+                return count
+
+            def close(self):
+                self.raw_closed.set()
+                super().close()
+
+        stdout_raw = LineRawPipe(b"stdout line\n")
+        stderr_raw = LineRawPipe(b"stderr line\n")
+        process = SimpleNamespace(
+            stdout=io.BufferedReader(stdout_raw, buffer_size=1),
+            stderr=io.BufferedReader(stderr_raw, buffer_size=1),
+            returncode=None,
+        )
+        callback_started = threading.Event()
+        release_callback = threading.Event()
+        cleanup_reached = threading.Event()
+        worker_finished = threading.Event()
+        callback_messages: list[str] = []
+        outcome: dict[str, BaseException] = {}
+
+        def blocked_callback(message):
+            callback_messages.append(message)
+            callback_started.set()
+            release_callback.wait()
+
+        def cancellation_observed():
+            return (
+                callback_started.is_set()
+                and stdout_raw.line_consumed.is_set()
+                and stderr_raw.line_consumed.is_set()
+            )
+
+        def cleanup_owned_process(_process, **_kwargs):
+            cleanup_reached.set()
+            return False
+
+        def run_supervisor():
+            try:
+                steamcmd_download(
+                    "123456",
+                    107410,
+                    "fake-user",
+                    "fake-password",
+                    "/isolated/steamcmd",
+                    "/isolated/workspace",
+                    log_callback=blocked_callback,
+                    secret_redactor=SteamSecretRedactor(("fake-user", "fake-password")),
+                    cancel_check=cancellation_observed,
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                worker_finished.set()
+
+        with (
+            patch("main.steamcmd.mods_download.start_process", return_value=process),
+            patch(
+                "main.steamcmd.mods_download._cleanup_owned_process",
+                side_effect=cleanup_owned_process,
+            ),
+        ):
+            worker = threading.Thread(target=run_supervisor, daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(callback_started.wait(1))
+                self.assertTrue(stdout_raw.line_consumed.wait(1))
+                self.assertTrue(stderr_raw.line_consumed.wait(1))
+                self.assertTrue(
+                    cleanup_reached.wait(2),
+                    "cancellation must reach owned-process cleanup without waiting for a callback lock",
+                )
+                self.assertTrue(worker_finished.wait(2))
+                self.assertIsInstance(outcome.get("error"), processes.CleanupUncertainError)
+                self.assertEqual(len(callback_messages), 1)
+            finally:
+                # The callback represents already-started logging I/O and cannot be preempted.
+                release_callback.set()
+                worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(callback_messages), 1)
+        self.assertTrue(stdout_raw.raw_closed.wait(1))
+        self.assertTrue(stderr_raw.raw_closed.wait(1))
+
+    def test_real_owned_tree_cleanup_does_not_close_a_buffered_pipe_held_by_reader(self) -> None:
+        class BlockingRawPipe(io.RawIOBase):
+            def __init__(self):
+                super().__init__()
+                self.read_started = threading.Event()
+                self.release_read = threading.Event()
+                self.raw_closed = threading.Event()
+
+            def readable(self):
+                return True
+
+            def readinto(self, buffer):
+                self.read_started.set()
+                self.release_read.wait()
+                return 0
+
+            def close(self):
+                self.raw_closed.set()
+                super().close()
+
+        stdout_raw = BlockingRawPipe()
+        stderr_raw = BlockingRawPipe()
+        process_waited = threading.Event()
+        process_terminated = threading.Event()
+
+        class FakePsutilProcess:
+            pid = 984321
+
+            def create_time(self):
+                return 1234.5
+
+            def is_running(self):
+                return fake_popen.returncode is None
+
+            def children(self, recursive=False):
+                return []
+
+        fake_identity_handle = FakePsutilProcess()
+
+        class FakePopen:
+            pid = 984321
+            returncode = None
+
+            def __init__(self):
+                self.stdout = io.BufferedReader(stdout_raw, buffer_size=1)
+                self.stderr = io.BufferedReader(stderr_raw, buffer_size=1)
+                self._steamcmd_process_identity = processes.ProcessIdentity(
+                    fake_identity_handle,
+                    self.pid,
+                    1234.5,
+                )
+                self._steamcmd_owned_identities = []
+                self._steamcmd_cleanup_incomplete = False
+                self._steamcmd_process_tree_contained = True
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                process_terminated.set()
+                self.returncode = 0
+
+            def kill(self):
+                self.returncode = -9
+
+            def wait(self, timeout=None):
+                process_waited.set()
+                return self.returncode
+
+        fake_popen = FakePopen()
+        worker_finished = threading.Event()
+        outcome: dict[str, BaseException] = {}
+
+        def cancellation_observed():
+            return stdout_raw.read_started.is_set() and stderr_raw.read_started.is_set()
+
+        def run_supervisor():
+            try:
+                steamcmd_download(
+                    "123456",
+                    107410,
+                    "fake-user",
+                    "fake-password",
+                    "/isolated/steamcmd",
+                    "/isolated/workspace",
+                    secret_redactor=SteamSecretRedactor(("fake-user", "fake-password")),
+                    cancel_check=cancellation_observed,
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                worker_finished.set()
+
+        with (
+            patch("main.steamcmd.mods_download.start_process", return_value=fake_popen),
+            patch("main.steamcmd.processes.psutil.Process", return_value=fake_identity_handle),
+        ):
+            worker = threading.Thread(target=run_supervisor, daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(stdout_raw.read_started.wait(1))
+                self.assertTrue(stderr_raw.read_started.wait(1))
+                self.assertTrue(process_waited.wait(1))
+                self.assertTrue(process_terminated.is_set())
+                self.assertTrue(
+                    worker_finished.wait(2),
+                    "real owned-tree cleanup must return before blocked buffered readers quiesce",
+                )
+                self.assertIsInstance(outcome.get("error"), processes.CleanupUncertainError)
+                self.assertFalse(stdout_raw.raw_closed.is_set())
+                self.assertFalse(stderr_raw.raw_closed.is_set())
+            finally:
+                # Always release fake OS reads so the daemon reader threads can close their own pipes.
+                stdout_raw.release_read.set()
+                stderr_raw.release_read.set()
+                worker.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(stdout_raw.raw_closed.wait(1))
+        self.assertTrue(stderr_raw.raw_closed.wait(1))
+
+    def test_communicate_timeout_cleanup_waits_boundedly_without_cross_thread_pipe_close(self) -> None:
+        class BlockingRawPipe(io.RawIOBase):
+            def __init__(self):
+                super().__init__()
+                self.read_started = threading.Event()
+                self.release_read = threading.Event()
+                self.raw_closed = threading.Event()
+
+            def readable(self):
+                return True
+
+            def readinto(self, buffer):
+                self.read_started.set()
+                self.release_read.wait()
+                return 0
+
+            def close(self):
+                self.raw_closed.set()
+                super().close()
+
+        stdout_raw = BlockingRawPipe()
+        stderr_raw = BlockingRawPipe()
+        process_waited = threading.Event()
+        process_terminated = threading.Event()
+
+        class FakePsutilProcess:
+            pid = 984322
+
+            def create_time(self):
+                return 1234.6
+
+            def is_running(self):
+                return fake_popen.returncode is None
+
+            def children(self, recursive=False):
+                return []
+
+        fake_identity_handle = FakePsutilProcess()
+
+        class FakePopen:
+            pid = 984322
+            returncode = None
+
+            def __init__(self):
+                self.stdout = io.BufferedReader(stdout_raw, buffer_size=1)
+                self.stderr = io.BufferedReader(stderr_raw, buffer_size=1)
+                self.stdout_thread = None
+                self.stderr_thread = None
+                self._steamcmd_process_identity = processes.ProcessIdentity(
+                    fake_identity_handle,
+                    self.pid,
+                    1234.6,
+                )
+                self._steamcmd_owned_identities = []
+                self._steamcmd_cleanup_incomplete = False
+                self._steamcmd_process_tree_contained = True
+                self.communication_started = False
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                process_terminated.set()
+                self.returncode = 0
+
+            def kill(self):
+                self.returncode = -9
+
+            def wait(self, timeout=None):
+                process_waited.set()
+                return self.returncode
+
+            @staticmethod
+            def _read_pipe(pipe):
+                try:
+                    pipe.read()
+                finally:
+                    pipe.close()
+
+            def communicate(self, timeout=None):
+                if not self.communication_started:
+                    self.communication_started = True
+                    self.stdout_thread = threading.Thread(
+                        target=self._read_pipe,
+                        args=(self.stdout,),
+                        daemon=True,
+                    )
+                    self.stderr_thread = threading.Thread(
+                        target=self._read_pipe,
+                        args=(self.stderr,),
+                        daemon=True,
+                    )
+                    self.stdout_thread.start()
+                    self.stderr_thread.start()
+                raise subprocess.TimeoutExpired("invented-steamcmd", timeout=timeout)
+
+        fake_popen = FakePopen()
+        worker_finished = threading.Event()
+        outcome: dict[str, BaseException] = {}
+
+        def cancellation_observed():
+            return stdout_raw.read_started.is_set() and stderr_raw.read_started.is_set()
+
+        def run_connection_check():
+            try:
+                test_connection(
+                    "/isolated/steamcmd",
+                    "fake-user",
+                    "fake-password",
+                    secret_redactor=SteamSecretRedactor(("fake-user", "fake-password")),
+                    cancel_check=cancellation_observed,
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                worker_finished.set()
+
+        with (
+            patch("main.steamcmd.mods_download.start_process", return_value=fake_popen),
+            patch("main.steamcmd.processes.psutil.Process", return_value=fake_identity_handle),
+        ):
+            worker = threading.Thread(target=run_connection_check, daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(stdout_raw.read_started.wait(1))
+                self.assertTrue(stderr_raw.read_started.wait(1))
+                self.assertTrue(process_waited.wait(1))
+                self.assertTrue(process_terminated.is_set())
+                self.assertTrue(
+                    worker_finished.wait(2),
+                    "communicate reader quiescence must be bounded after real owned-tree cleanup",
+                )
+                self.assertIsInstance(outcome.get("error"), processes.CleanupUncertainError)
+                self.assertTrue(fake_popen.stdout_thread.is_alive())
+                self.assertTrue(fake_popen.stderr_thread.is_alive())
+                self.assertFalse(stdout_raw.raw_closed.is_set())
+                self.assertFalse(stderr_raw.raw_closed.is_set())
+            finally:
+                # Always unblock both simulated Popen reader threads on RED or GREEN.
+                stdout_raw.release_read.set()
+                stderr_raw.release_read.set()
+                worker.join(timeout=2)
+                for reader in (fake_popen.stdout_thread, fake_popen.stderr_thread):
+                    if reader is not None:
+                        reader.join(timeout=2)
+
+        self.assertFalse(worker.is_alive())
+        self.assertTrue(stdout_raw.raw_closed.wait(1))
+        self.assertTrue(stderr_raw.raw_closed.wait(1))
+
+    def test_unstarted_communicate_reader_with_unproven_process_is_uncertain(self) -> None:
+        class TrackingPipe:
+            def __init__(self):
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+
+        stdout = TrackingPipe()
+        unstarted_reader = threading.Thread(target=lambda: None, daemon=True)
+
+        class FakePopen:
+            returncode = None
+            pid = 984323
+
+            def __init__(self):
+                self.stdout = stdout
+                self.stderr = None
+                self.stdout_thread = unstarted_reader
+                self.stderr_thread = None
+                self._communication_started = True
+                self._steamcmd_process_identity = None
+                self._steamcmd_owned_identities = []
+                self._steamcmd_cleanup_incomplete = True
+
+            def poll(self):
+                return None
+
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired("invented-steamcmd", timeout=timeout)
+
+            def terminate(self):
+                raise AssertionError("an unverified process identity must not be signaled")
+
+        fake_popen = FakePopen()
+
+        with patch("main.steamcmd.mods_download.start_process", return_value=fake_popen):
+            with self.assertRaises(processes.CleanupUncertainError) as raised:
+                test_connection(
+                    "/isolated/steamcmd",
+                    "fake-user",
+                    "fake-password",
+                    secret_redactor=SteamSecretRedactor(("fake-user", "fake-password")),
+                )
+
+        self.assertIsInstance(raised.exception.original_exception, subprocess.TimeoutExpired)
+        self.assertEqual(raised.exception.diagnostic, processes.CleanupUncertainError.public_diagnostic)
+        self.assertFalse(unstarted_reader.is_alive())
+        self.assertEqual(stdout.close_calls, 0)
+
+    def test_communicate_reader_join_failure_preserves_uncertainty(self) -> None:
+        class TrackingPipe:
+            def __init__(self):
+                self.close_calls = 0
+
+            def close(self):
+                self.close_calls += 1
+
+        stdout = TrackingPipe()
+        reader_started = threading.Event()
+        release_reader = threading.Event()
+
+        def block_reader():
+            reader_started.set()
+            release_reader.wait()
+
+        reader = threading.Thread(target=block_reader, daemon=True)
+        reader.start()
+        original_join = reader.join
+        self.assertTrue(reader_started.wait(1))
+
+        def fail_join(_timeout=None):
+            raise RuntimeError("private reader join diagnostic")
+
+        reader.join = fail_join
+
+        class FakePopen:
+            returncode = None
+            pid = 984324
+
+            def __init__(self):
+                self.stdout = stdout
+                self.stderr = None
+                self.stdout_thread = reader
+                self.stderr_thread = None
+                self._communication_started = True
+                self._steamcmd_process_identity = None
+                self._steamcmd_owned_identities = []
+                self._steamcmd_cleanup_incomplete = True
+
+            def poll(self):
+                return None
+
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired("invented-steamcmd", timeout=timeout)
+
+            def terminate(self):
+                raise AssertionError("an unverified process identity must not be signaled")
+
+        fake_popen = FakePopen()
+
+        try:
+            with patch("main.steamcmd.mods_download.start_process", return_value=fake_popen):
+                with self.assertRaises(processes.CleanupUncertainError) as raised:
+                    test_connection(
+                        "/isolated/steamcmd",
+                        "fake-user",
+                        "fake-password",
+                        secret_redactor=SteamSecretRedactor(("fake-user", "fake-password")),
+                    )
+
+            self.assertIsInstance(raised.exception.original_exception, subprocess.TimeoutExpired)
+            self.assertEqual(raised.exception.diagnostic, processes.CleanupUncertainError.public_diagnostic)
+            self.assertTrue(reader.is_alive())
+            self.assertEqual(stdout.close_calls, 0)
+        finally:
+            release_reader.set()
+            original_join(timeout=2)
+
+        self.assertFalse(reader.is_alive())
+
+    def test_callback_admitted_before_cancellation_is_accounted_until_reader_quiesces(self) -> None:
+        class OneLinePipe:
+            def __init__(self, line):
+                self._lines = [line, b"late output\n"] if line else []
+                self.closed = threading.Event()
+
+            def readline(self):
+                return self._lines.pop(0) if self._lines else b""
+
+            def close(self):
+                self.closed.set()
+
+        stdout = OneLinePipe(b"admitted output\n")
+        stderr = OneLinePipe(b"")
+        process = SimpleNamespace(
+            stdout=stdout,
+            stderr=stderr,
+            poll=Mock(return_value=None),
+            wait=Mock(),
+        )
+        admission_dispatch_started = threading.Event()
+        release_dispatch = threading.Event()
+        cancellation_requested = threading.Event()
+        callback_messages: list[str] = []
+        outcome: dict[str, BaseException] = {}
+        supervisor_finished = threading.Event()
+
+        def gated_print(*_args, **_kwargs):
+            # The callback has passed the short admission gate but has not
+            # physically entered print/callback dispatch yet.
+            admission_dispatch_started.set()
+            release_dispatch.wait()
+
+        def run_supervisor():
+            try:
+                stream_process_output(
+                    process,
+                    callback_messages.append,
+                    secret_redactor=SteamSecretRedactor(),
+                    cancel_check=cancellation_requested.is_set,
+                )
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                supervisor_finished.set()
+
+        with patch(
+            "main.utils.process_output.print",
+            side_effect=gated_print,
+            create=True,
+        ):
+            supervisor = threading.Thread(target=run_supervisor, daemon=True)
+            supervisor.start()
+            try:
+                self.assertTrue(admission_dispatch_started.wait(1))
+                cancellation_requested.set()
+                self.assertTrue(
+                    supervisor_finished.wait(1),
+                    "cancellation must reach its owner without waiting for admitted callback work",
+                )
+                cancellation = outcome.get("error")
+                self.assertIsInstance(cancellation, Exception)
+                self.assertEqual(type(cancellation).__name__, "ProcessOutputCancelledError")
+                self.assertEqual(callback_messages, [])
+                self.assertFalse(cancellation.readers_quiesced(timeout=0.01))
+            finally:
+                release_dispatch.set()
+                supervisor.join(timeout=2)
+
+        self.assertFalse(supervisor.is_alive())
+        self.assertLessEqual(len(callback_messages), 1)
+        self.assertNotIn("late output\n", callback_messages)
+        self.assertTrue(cancellation.readers_quiesced(timeout=1))
+        self.assertTrue(stdout.closed.is_set())
+
+    def test_connection_cancellation_is_checked_while_communicate_times_out(self) -> None:
+        process = Mock(returncode=None)
+        process.communicate.side_effect = subprocess.TimeoutExpired(
+            "invented-steamcmd",
+            timeout=0.25,
+        )
+        cancel_check = Mock(side_effect=(False, False, True))
+
+        with (
+            patch("main.steamcmd.mods_download.start_process", return_value=process),
+            patch("main.steamcmd.mods_download._cleanup_owned_process", return_value=True) as cleanup,
+        ):
+            with self.assertRaises(LeaseLostError):
+                test_connection(
+                    "/isolated/steamcmd",
+                    "fake-user",
+                    "fake-password",
+                    secret_redactor=SteamSecretRedactor(("fake-user", "fake-password")),
+                    cancel_check=cancel_check,
+                )
+
+        process.communicate.assert_called_once_with(timeout=0.25)
+        cleanup.assert_called_once_with(process, close_pipes=False)
+
+    def test_two_hour_retry_wait_stops_on_cancellation_without_starting_another_child(self) -> None:
+        cancel_check = Mock(side_effect=(False, False, True))
+        snapshot = self._snapshot("/unused")
+
+        with (
+            patch("main.steamcmd.mods_download.sleep") as sleep,
+            patch("main.steamcmd.mods_download.start_process") as start_process,
+        ):
+            with self.assertRaises(LeaseLostError):
+                download_fallback(
+                    "123456",
+                    107410,
+                    "fake-user",
+                    "fake-password",
+                    "/isolated/steamcmd",
+                    "/isolated/workspace",
+                    secret_redactor=SteamSecretRedactor(("fake-user", "fake-password")),
+                    config_snapshot=snapshot,
+                    cancel_check=cancel_check,
+                )
+
+        sleep.assert_called_once_with(0.25)
+        start_process.assert_not_called()
+
+    def test_cancelled_download_does_not_delete_shared_appcache(self) -> None:
+        snapshot = self._snapshot("/unused")
+
+        with (
+            patch("main.steamcmd.mods_download.delete_steamcmd_appcache") as delete_cache,
+            patch("main.steamcmd.mods_download.GhostFolder") as folder_type,
+        ):
+            with self.assertRaises(LeaseLostError):
+                download_mods(
+                    ["123456"],
+                    "fake-instance",
+                    secret_redactor=SteamSecretRedactor(("fake-user", "fake-password")),
+                    config_snapshot=snapshot,
+                    cancel_check=lambda: True,
+                )
+
+        delete_cache.assert_not_called()
+        folder_type.assert_not_called()
+
+    def test_workspace_renews_immediately_before_each_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            events: list[str] = []
+            workspace = GhostFolder(
+                "fake-instance",
+                str(Path(temp_dir) / "downloads"),
+                cancel_check=lambda: False,
+                before_shared_write=lambda: events.append("guard"),
+            )
+            content = Path(workspace.ghost_folder_path) / "mods" / "123456"
+            content.mkdir(parents=True)
+            (content / "fake.pbo").write_bytes(b"invented mod")
+            destination = Path(temp_dir) / "installed"
+            real_publish = _atomic_publish
+
+            def record_publish(source, target):
+                events.append("publish")
+                real_publish(source, target)
+
+            try:
+                with patch.object(ghost_folder_module, "_atomic_publish", side_effect=record_publish):
+                    workspace.move_files(
+                        destination_path=str(destination),
+                        internal_path="mods",
+                    )
+            finally:
+                workspace.cleanup()
+
+            publish_indexes = [index for index, event in enumerate(events) if event == "publish"]
+            self.assertTrue(publish_indexes)
+            self.assertTrue(all(events[index - 1] == "guard" for index in publish_indexes))
+
     def test_completed_nonzero_login_returns_false(self) -> None:
         process = Mock(returncode=5)
         process.communicate.return_value = (b"login rejected", b"details")
@@ -824,7 +1638,7 @@ class DownloadLifecycleTests(unittest.TestCase):
                     secret_redactor=redactor,
                 )
 
-        cleanup.assert_called_once_with(process)
+        cleanup.assert_called_once_with(process, close_pipes=False)
         self.assertIn("TimeoutExpired", raised.exception.diagnostic)
         self.assertNotIn("fake-user", raised.exception.diagnostic)
         self.assertNotIn("fake-password", raised.exception.diagnostic)

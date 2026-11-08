@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import math
 from collections.abc import Mapping
@@ -20,18 +19,11 @@ from .instance_lifecycle import (
 )
 from .models import InstanceTask, Instances
 from .instance_tasks import track_instance_task
-from .steamcmd.mods_download import download_mods
-from .modpreset.preset_extraction import preset_parser
-from .modpreset.modpathing import check_installed
+from .download_jobs import run_download_job
 from .serverhandling.start_server import (
     ProcessCreationFailedError,
     start_server,
 )
-from .utils.config import config
-from .utils.operation_logging import operation_loggers
-from .utils.steam_errors import SteamCommandError, SteamSecretRedactor, safe_steam_diagnostic
-from django.core.cache import cache
-from celery.result import AsyncResult
 from .serverhandling.process_identity import (
     RUN_ID_ENVIRONMENT_KEY,
     ProcessIdentity,
@@ -43,112 +35,22 @@ from .serverhandling.process_identity import (
 
 @shared_task(bind=True)
 @track_instance_task
-def download_mods_task(self, instance_id: int, name: str, user: str, file_path: str, mods_directory: str) -> dict:
-    """Downloads mods based on the provided file path and directory.
+def download_mods_task(
+    self,
+    instance_id: int,
+    name: str | None = None,
+    user: str | None = None,
+    file_path: str | None = None,
+    mods_directory: str | None = None,
+) -> dict:
+    """Run the durable download binding for the current instance state.
 
-    Args:
-        instance_id: The database ID whose readiness flag is updated on success.
-        name (str): The name of the instance.
-        file_path (str): The path to the file containing the mod list.
-        mods_directory (str): The directory where mods are located.
-
-    Returns:
-        dict: The result of the download operation. The task also writes logs,
-            updates Redis task state, and invokes SteamCMD for missing mods.
+    Legacy path and identity hints remain accepted for queued task messages,
+    but the worker deliberately ignores them.
     """
-    cache_key = f"download_task_{instance_id}"
-    existing_task_id = cache.get(cache_key)
+    del name, user, file_path, mods_directory
+    return run_download_job(self, instance_id)
 
-    if existing_task_id:
-        existing_task = AsyncResult(existing_task_id)
-        if existing_task.state in ['PENDING', 'PROGRESS', 'STARTED']:
-            return {'status': 'Pobieranie jest już w toku.', 'task_id': existing_task_id}
-
-    cache.set(cache_key, self.request.id, timeout=14400)  # Timeout set to 4 hours
-    secret_redactor = SteamSecretRedactor.from_config()
-
-    try:
-        self.update_state(state='PROGRESS', meta={'status': 'Rozpoczynanie pobierania...'})
-        
-        with operation_loggers(
-            config.get("paths.logs_directory", "/logs"),
-            user,
-            ("operations", "download"),
-            grouped=True,
-            secret_redactor=secret_redactor,
-        ) as loggers:
-            operations_logger = loggers["operations"]
-            download_logger = loggers["download"]
-
-            def download_error_callback(message: str) -> None:
-                """Use traceback logging when the callback runs in an exception."""
-                if sys.exc_info()[0] is not None:
-                    download_logger.exception(message)
-                else:
-                    download_logger.error(message)
-
-            try:
-                workshop_ids = preset_parser(file_path, log_callback=operations_logger.info)
-                mods_to_download = check_installed(
-                    wids=workshop_ids,
-                    mods_dir=mods_directory,
-                    log_callback=operations_logger.info,
-                )[1]
-                if mods_to_download:
-                    def progress_callback(current: int, total: int):
-                        """Update the task state with the current download progress.
-
-                        Args:
-                            current (int): The number of mods downloaded so far.
-                            total (int): The total number of mods to download.
-                        """
-                        self.update_state(state='PROGRESS', meta={'status': f'Pobieranie modów... {current}/{total}'})
-
-                    failed_mods = download_mods(
-                        mods_to_download=mods_to_download,
-                        name=name,
-                        log_callback=download_logger.info,
-                        error_callback=download_error_callback,
-                        progress_callback=progress_callback,
-                        secret_redactor=secret_redactor,
-                    )
-
-                    if failed_mods:
-                        raise Exception(f'Nie udało się pobrać modów: {failed_mods}')
-
-                with lifecycle_transaction():
-                    instance = Instances.objects.select_for_update().get(id=instance_id)
-                    if instance.lifecycle_state != Instances.LifecycleState.STOPPED:
-                        raise RuntimeError(
-                            "Instance lifecycle changed while mods were downloading."
-                        )
-                    instance.is_ready = True
-                    instance.save(update_fields=["is_ready"])
-
-                self.update_state(state='SUCCESS', meta={'status': 'Pobieranie zakończone pomyślnie!'})
-            except Retry:
-                raise
-            except Exception as exc:
-                diagnostic = safe_steam_diagnostic(exc, secret_redactor)
-                if diagnostic:
-                    download_logger.error("Steam download diagnostic: %s", diagnostic)
-                download_logger.exception("Mod download task failed.")
-                raise SteamCommandError(
-                    "Nie udało się pobrać modów. Sprawdź logi operacji.",
-                    diagnostic=diagnostic,
-                ) from None
-
-        cache.delete(cache_key)
-        return {'status': 'Pobieranie zakończone pomyślnie!'}
-    except Retry:
-        raise
-    except Exception as exc:
-        cache.delete(cache_key)
-        raise SteamCommandError(
-            "Nie udało się pobrać modów. Sprawdź logi operacji.",
-            diagnostic=safe_steam_diagnostic(exc, secret_redactor),
-        ) from None
-    
 @shared_task(bind=True)
 @track_instance_task
 def start_server_task(self, instance_id: int, arma3_dir: str, run_id: str) -> dict:

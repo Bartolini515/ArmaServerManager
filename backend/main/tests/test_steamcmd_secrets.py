@@ -8,10 +8,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import RequestFactory, TestCase
 
 from main.steamcmd.mods_download import assign_new_steamguard, steamcmd_download, test_connection
 from main.steamcmd.steam_auth import generate_steam_guard_code
+from main.instance_tasks import create_instance_task_binding
+from main.models import InstanceTask, Instances, Ports
 from main.tasks import download_mods_task
 from main.utils.config import config
 from main.utils.operation_logging import operation_loggers
@@ -53,6 +57,26 @@ class FakePipe:
         self.closed = True
 
 
+class FakeDownloadLease:
+    is_lost = False
+
+    def __init__(self) -> None:
+        self.released = False
+
+    def acquire(self) -> bool:
+        return True
+
+    def start_heartbeat(self) -> None:
+        return None
+
+    def assert_owned(self) -> None:
+        return None
+
+    def release(self) -> bool:
+        self.released = True
+        return True
+
+
 class SteamCmdSecretTests(TestCase):
     def setUp(self) -> None:
         self.redactor = SteamSecretRedactor(
@@ -72,6 +96,41 @@ class SteamCmdSecretTests(TestCase):
             STEAM_GUARD_CODE,
         ):
             self.assertNotIn(secret, value)
+
+    def make_download_binding(self, suffix=""):
+        owner = get_user_model().objects.create_user(
+            username=f"alice{suffix}",
+            password="test-password",
+        )
+        port = Ports.objects.create(
+            port_number=25991 + int(suffix or 0),
+            is_available=False,
+        )
+        instance = Instances.objects.create(
+            name=f"secret-worker-server{suffix}",
+            user=owner,
+            preset=SimpleUploadedFile("secret-worker.html", b"<html></html>"),
+            port=port,
+            lifecycle_state=Instances.LifecycleState.STOPPED,
+        )
+        binding = create_instance_task_binding(instance, InstanceTask.Kind.DOWNLOAD)
+        return instance, binding
+
+    @staticmethod
+    def worker_snapshot(logs_directory, username, password, shared_secret):
+        return {
+            "paths": {
+                "logs_directory": str(logs_directory),
+                "mods_directory": "/isolated/mods",
+                "steamcmd": "/isolated/steamcmd",
+                "download_directory": "/isolated/downloads",
+            },
+            "steam_auth": {
+                "username": username,
+                "password": password,
+                "shared_secret": shared_secret,
+            },
+        }
 
     def test_process_output_is_redacted_before_print_and_callback(self) -> None:
         stdout = FakePipe(
@@ -365,7 +424,7 @@ class SteamCmdSecretTests(TestCase):
         self.assert_secrets_absent(str(raised.exception))
         self.assert_secrets_absent(raised.exception.diagnostic)
         self.assertIn("TimeoutExpired", raised.exception.diagnostic)
-        cleanup.assert_called_once_with(process)
+        cleanup.assert_called_once_with(process, close_pipes=False)
 
     def test_called_process_error_command_is_safe(self) -> None:
         command = [
@@ -591,15 +650,13 @@ class SteamCmdSecretTests(TestCase):
     def test_celery_failure_result_and_logs_use_safe_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             logs_directory = Path(temp_dir)
-
-            def config_value(key: str, default=None):
-                values = {
-                    "paths.logs_directory": str(logs_directory),
-                    "steam_auth.username": STEAM_USERNAME,
-                    "steam_auth.password": STEAM_PASSWORD,
-                    "steam_auth.shared_secret": STEAM_SHARED_SECRET,
-                }
-                return values.get(key, default)
+            instance, binding = self.make_download_binding()
+            snapshot = self.worker_snapshot(
+                logs_directory,
+                STEAM_USERNAME,
+                STEAM_PASSWORD,
+                STEAM_SHARED_SECRET,
+            )
 
             raw_failure = RuntimeError(
                 f"worker failed with {STEAM_USERNAME} {STEAM_PASSWORD} "
@@ -611,17 +668,17 @@ class SteamCmdSecretTests(TestCase):
                 raise raw_failure
 
             with (
-                patch.object(config, "get", side_effect=config_value),
-                patch("main.tasks.cache.get", return_value=None),
-                patch("main.tasks.cache.set"),
-                patch("main.tasks.cache.delete"),
-                patch("main.tasks.preset_parser", return_value=["123456"]),
-                patch("main.tasks.check_installed", return_value=([], ["123456"])),
-                patch("main.tasks.download_mods", side_effect=fail_download),
+                patch.object(config, "snapshot", return_value=snapshot),
+                patch("main.download_jobs._validate_current_preset", return_value="/isolated/current-preset.html"),
+                patch("main.download_jobs._new_download_lease", return_value=FakeDownloadLease()),
+                patch("main.download_jobs.preset_parser", return_value=["123456"]),
+                patch("main.download_jobs.check_installed", return_value=([], ["123456"])),
+                patch("main.download_jobs.download_mods", side_effect=fail_download),
                 patch.object(download_mods_task, "update_state"),
             ):
                 result = download_mods_task.apply(
-                    args=(1, "unit", "alice", "fake-preset", "fake-mods"),
+                    args=(instance.pk, "unit", "alice", "fake-preset", "fake-mods"),
+                    task_id=binding.task_id,
                     throw=False,
                 )
 
@@ -662,19 +719,19 @@ class SteamCmdSecretTests(TestCase):
             ),
         )
 
-        for failure in failures:
+        for failure_index, failure in enumerate(failures, start=1):
             with self.subTest(failure=type(failure).__name__):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     logs_directory = Path(temp_dir)
-
-                    def config_value(key: str, default=None):
-                        values = {
-                            "paths.logs_directory": str(logs_directory),
-                            "steam_auth.username": ESCAPED_STEAM_USERNAME,
-                            "steam_auth.password": ESCAPED_STEAM_PASSWORD,
-                            "steam_auth.shared_secret": STEAM_SHARED_SECRET,
-                        }
-                        return values.get(key, default)
+                    instance, binding = self.make_download_binding(
+                        suffix=str(failure_index)
+                    )
+                    snapshot = self.worker_snapshot(
+                        logs_directory,
+                        ESCAPED_STEAM_USERNAME,
+                        ESCAPED_STEAM_PASSWORD,
+                        STEAM_SHARED_SECRET,
+                    )
 
                     def fail_download(**kwargs):
                         kwargs["secret_redactor"].add_secret(STEAM_GUARD_CODE)
@@ -688,24 +745,29 @@ class SteamCmdSecretTests(TestCase):
                             raise failure from cause
 
                     with (
-                        patch.object(config, "get", side_effect=config_value),
-                        patch("main.tasks.cache.get", return_value=None),
-                        patch("main.tasks.cache.set"),
-                        patch("main.tasks.cache.delete"),
-                        patch("main.tasks.preset_parser", return_value=["123456"]),
-                        patch("main.tasks.check_installed", return_value=([], ["123456"])),
-                        patch("main.tasks.download_mods", side_effect=fail_download),
+                        patch.object(config, "snapshot", return_value=snapshot),
+                        patch("main.download_jobs._validate_current_preset", return_value="/isolated/current-preset.html"),
+                        patch("main.download_jobs._new_download_lease", return_value=FakeDownloadLease()),
+                        patch("main.download_jobs.preset_parser", return_value=["123456"]),
+                        patch("main.download_jobs.check_installed", return_value=([], ["123456"])),
+                        patch("main.download_jobs.download_mods", side_effect=fail_download),
                         patch.object(download_mods_task, "update_state"),
                     ):
                         result = download_mods_task.apply(
-                            args=(1, "unit", "alice", "fake-preset", "fake-mods"),
+                            args=(instance.pk, "unit", "alice", "fake-preset", "fake-mods"),
+                            task_id=binding.task_id,
                             throw=False,
                         )
 
                     self.assertTrue(result.failed())
                     self.assertIsInstance(result.result, SteamCommandError)
                     diagnostic = result.result.diagnostic
-                    self.assertIn("SteamCommandError", diagnostic)
+                    expected_diagnostic = (
+                        "TimeoutExpired: timeout=13"
+                        if isinstance(failure, subprocess.TimeoutExpired)
+                        else "CalledProcessError: returncode=17"
+                    )
+                    self.assertEqual(diagnostic, expected_diagnostic)
                     self.assertNotIn("+login", diagnostic)
                     for spelling in credential_spellings(ESCAPED_STEAM_PASSWORD) | credential_spellings(ESCAPED_STEAM_USERNAME):
                         self.assertNotIn(spelling, diagnostic)
@@ -770,43 +832,50 @@ class SteamCmdSecretTests(TestCase):
             ),
         )
 
-        for failure in failures:
+        for failure_index, failure in enumerate(failures, start=1):
             with self.subTest(failure=type(failure).__name__):
                 with tempfile.TemporaryDirectory() as temp_dir:
                     logs_directory = Path(temp_dir)
-
-                    def config_value(key: str, default=None):
-                        values = {
-                            "paths.logs_directory": str(logs_directory),
-                            "steam_auth.username": ESCAPED_STEAM_USERNAME,
-                            "steam_auth.password": ESCAPED_STEAM_PASSWORD,
-                            "steam_auth.shared_secret": STEAM_SHARED_SECRET,
-                        }
-                        return values.get(key, default)
+                    instance, binding = self.make_download_binding(
+                        suffix=str(failure_index + 10)
+                    )
+                    snapshot = self.worker_snapshot(
+                        logs_directory,
+                        ESCAPED_STEAM_USERNAME,
+                        ESCAPED_STEAM_PASSWORD,
+                        STEAM_SHARED_SECRET,
+                    )
 
                     def fail_download(**kwargs):
                         kwargs["secret_redactor"].add_secret(STEAM_GUARD_CODE)
                         raise failure
 
                     with (
-                        patch.object(config, "get", side_effect=config_value),
-                        patch("main.tasks.cache.get", return_value=None),
-                        patch("main.tasks.cache.set"),
-                        patch("main.tasks.cache.delete"),
-                        patch("main.tasks.preset_parser", return_value=["123456"]),
-                        patch("main.tasks.check_installed", return_value=([], ["123456"])),
-                        patch("main.tasks.download_mods", side_effect=fail_download),
+                        patch.object(config, "snapshot", return_value=snapshot),
+                        patch("main.download_jobs._validate_current_preset", return_value="/isolated/current-preset.html"),
+                        patch("main.download_jobs._new_download_lease", return_value=FakeDownloadLease()),
+                        patch("main.download_jobs.preset_parser", return_value=["123456"]),
+                        patch("main.download_jobs.check_installed", return_value=([], ["123456"])),
+                        patch("main.download_jobs.download_mods", side_effect=fail_download),
                         patch.object(download_mods_task, "update_state"),
                     ):
                         result = download_mods_task.apply(
-                            args=(1, "unit", "alice", "fake-preset", "fake-mods"),
+                            args=(instance.pk, "unit", "alice", "fake-preset", "fake-mods"),
+                            task_id=binding.task_id,
                             throw=False,
                         )
 
                     self.assertTrue(result.failed())
                     self.assertIsInstance(result.result, SteamCommandError)
                     diagnostic = result.result.diagnostic
-                    self.assertIn("SteamCommandError", diagnostic)
+                    expected_diagnostic = (
+                        "RuntimeError: details omitted"
+                        if type(failure) is RuntimeError
+                        else "SteamCommandError: details omitted"
+                        if isinstance(failure, SteamCommandError)
+                        else "Exception: details omitted"
+                    )
+                    self.assertEqual(diagnostic, expected_diagnostic)
                     self.assertNotIn("+login", diagnostic)
                     for spelling in credential_spellings(ESCAPED_STEAM_PASSWORD) | credential_spellings(ESCAPED_STEAM_USERNAME):
                         self.assertNotIn(spelling, diagnostic)

@@ -1,7 +1,10 @@
+import logging
 import re
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from main.steamcmd.steam_auth import generate_steam_guard_code
 from main.utils.operation_logging import operation_loggers
@@ -98,6 +101,85 @@ class OperationLoggingTests(unittest.TestCase):
         self.assertEqual(len(logger.logger.handlers), 0)
         self.assertTrue(all(handler.stream is None for handler in handlers))
         self.assertTrue(list(self.logs_directory.glob("log_start_*.txt")))
+
+    def test_explicit_exception_teardown_defers_a_blocked_handler_close(self) -> None:
+        emit_started = threading.Event()
+        release_emit = threading.Event()
+        context_finished = threading.Event()
+        all_handlers_closed = threading.Event()
+        outcome: dict[str, BaseException] = {}
+        worker_threads: list[threading.Thread] = []
+        handlers: list[logging.FileHandler] = []
+        closed_handler_paths: set[str] = set()
+        original_emit = logging.FileHandler.emit
+        original_close = logging.FileHandler.close
+
+        def blocked_emit(handler, record):
+            if record.getMessage() == "blocked operation callback":
+                emit_started.set()
+                release_emit.wait()
+            return original_emit(handler, record)
+
+        def tracking_close(handler):
+            result = original_close(handler)
+            try:
+                handler_path = Path(handler.baseFilename)
+                handler_path.relative_to(self.logs_directory)
+            except (AttributeError, ValueError):
+                return result
+            closed_handler_paths.add(str(handler_path))
+            if len(closed_handler_paths) >= 2:
+                all_handlers_closed.set()
+            return result
+
+        def run_operation():
+            try:
+                with operation_loggers(
+                    self.logs_directory,
+                    "alice",
+                    ("download",),
+                    defer_close_on_exception=True,
+                ) as loggers:
+                    logger = loggers["download"]
+                    handlers.extend(logger.logger.handlers)
+                    writer = threading.Thread(
+                        target=lambda: logger.info("blocked operation callback"),
+                        daemon=True,
+                    )
+                    worker_threads.append(writer)
+                    writer.start()
+                    if not emit_started.wait(1):
+                        raise RuntimeError("handler emit did not start")
+                    raise RuntimeError("operation has uncertain cleanup")
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                context_finished.set()
+
+        with (
+            patch.object(logging.FileHandler, "emit", new=blocked_emit),
+            patch.object(logging.FileHandler, "close", new=tracking_close),
+        ):
+            operation = threading.Thread(target=run_operation, daemon=True)
+            operation.start()
+            try:
+                self.assertTrue(emit_started.wait(1))
+                self.assertTrue(
+                    context_finished.wait(1),
+                    "exception teardown must not wait for a handler lock held by an admitted callback",
+                )
+                self.assertIsInstance(outcome.get("error"), RuntimeError)
+                self.assertFalse(all_handlers_closed.is_set())
+                self.assertTrue(any(handler.stream is not None for handler in handlers))
+            finally:
+                release_emit.set()
+                operation.join(timeout=2)
+                for worker in worker_threads:
+                    worker.join(timeout=2)
+
+        self.assertFalse(operation.is_alive())
+        self.assertTrue(all_handlers_closed.wait(1))
+        self.assertTrue(all(handler.stream is None for handler in handlers))
 
     def test_steam_guard_generation_reports_error_through_callback(self) -> None:
         errors: list[str] = []

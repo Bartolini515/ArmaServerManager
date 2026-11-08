@@ -10,7 +10,7 @@ import shutil
 import stat
 import sys
 import tempfile
-from typing import Any
+from typing import Any, Callable
 import uuid
 
 from ..utils.operation_logging import LogCallback
@@ -20,15 +20,26 @@ logger = logging.getLogger(__name__)
 
 
 class GhostFolder:
-    def __init__(self, name: str, path: str, log_callback: LogCallback | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        path: str,
+        log_callback: LogCallback | None = None,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+        before_shared_write: Callable[[], None] | None = None,
+    ) -> None:
         """Create a unique download workspace below the configured root."""
         self.name = name
         self.base_path = os.path.realpath(os.path.abspath(path or "."))
         self.log_callback = log_callback
+        self.cancel_check = cancel_check
+        self.before_shared_write = before_shared_write
         self.ghost_folder_path = ""
         self._owned_directories: dict[str, tuple[str, int, int, str, int, int]] = {}
         self.retained = False
 
+        self._ensure_active()
         os.makedirs(self.base_path, exist_ok=True)
         self.ghost_folder_path = self._create_owned_directory(
             self.base_path,
@@ -42,6 +53,7 @@ class GhostFolder:
 
     def _create_owned_directory(self, root: str, *, prefix: str) -> str:
         root_path = os.path.realpath(os.path.abspath(root))
+        self._ensure_active()
         os.makedirs(root_path, exist_ok=True)
         parent_metadata = os.stat(root_path, follow_symlinks=False)
         if not stat.S_ISDIR(parent_metadata.st_mode):
@@ -49,6 +61,7 @@ class GhostFolder:
         parent_identity = _directory_path_identity(root_path)
         if parent_identity is None:
             raise OSError("Could not bind the Steam download parent directory")
+        self._ensure_active()
         directory = tempfile.mkdtemp(prefix=prefix, dir=root_path)
         resolved = os.path.realpath(directory)
         if not _is_within(root_path, resolved):
@@ -92,6 +105,7 @@ class GhostFolder:
             raise OSError("Steam download source escaped its owned workspace")
 
         destination_root = os.path.realpath(os.path.abspath(destination_path or "."))
+        self._ensure_active()
         os.makedirs(destination_root, exist_ok=True)
         if not os.path.isdir(source_directory):
             raise FileNotFoundError("Steam download content directory is unavailable")
@@ -114,15 +128,19 @@ class GhostFolder:
             try:
                 payload_path = os.path.join(stage_path, "payload")
                 if entry.is_dir(follow_symlinks=False):
+                    self._ensure_active()
                     _reject_nested_symlinks(source_item)
+                    self._ensure_active()
                     shutil.copytree(source_item, payload_path, symlinks=True)
                     _reject_nested_symlinks(payload_path)
                 elif entry.is_file(follow_symlinks=False):
+                    self._ensure_active()
                     shutil.copy2(source_item, payload_path)
                 else:
                     raise OSError("Steam download item is not a regular file or directory")
 
                 try:
+                    self._ensure_active()
                     _atomic_publish(payload_path, destination_item)
                 except OSError:
                     # Another operation may have completed this mod while this
@@ -226,23 +244,45 @@ class GhostFolder:
 
     def _notify(self, message: str) -> None:
         if self.log_callback:
+            self._ensure_active()
             self.log_callback(message)
 
     def _notify_cleanup(self, message: str) -> None:
-        if self.log_callback:
+        if self.log_callback and not self._cancelled():
             try:
+                self._ensure_active()
                 self.log_callback(message)
             except Exception:
-                _log_cleanup_warning("Steam download workspace cleanup log callback failed.")
+                if not self._cancelled():
+                    _log_cleanup_warning("Steam download workspace cleanup log callback failed.")
 
     def _report_cleanup_failure(self) -> None:
         message = "Could not safely remove an owned Steam download directory; cleanup is incomplete."
-        _log_cleanup_warning(message)
-        if self.log_callback:
+        if not self._cancelled():
+            _log_cleanup_warning(message)
+        if self.log_callback and not self._cancelled():
             try:
+                self._ensure_active()
                 self.log_callback(message)
             except Exception:
-                _log_cleanup_warning("Steam download workspace cleanup log callback failed.")
+                if not self._cancelled():
+                    _log_cleanup_warning("Steam download workspace cleanup log callback failed.")
+
+    def _cancelled(self) -> bool:
+        if self.cancel_check is None:
+            return False
+        try:
+            return bool(self.cancel_check())
+        except Exception:
+            return True
+
+    def _ensure_active(self) -> None:
+        if self._cancelled():
+            from ..download_leases import LeaseLostError
+
+            raise LeaseLostError() from None
+        if self.before_shared_write is not None:
+            self.before_shared_write()
 
 
 def _open_owned_directory(
