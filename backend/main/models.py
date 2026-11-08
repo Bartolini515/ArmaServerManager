@@ -3,6 +3,14 @@ from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.base_user import BaseUserManager
 
+
+class InstanceLifecycleLock(models.Model):
+    """One database row serializes lifecycle admission across all instances."""
+
+    id = models.PositiveSmallIntegerField(primary_key=True)
+
+
+
 class ProfileManager(BaseUserManager):
     def create_user(self, username, password, **extra_fields):
         if not username:
@@ -45,6 +53,13 @@ def user_logs_directory_path(instance, filename):
     return 'user_{0}/logs/instance_{1}_{2}'.format(instance.user.id, instance.id, filename)
 
 class Instances(models.Model):
+    class LifecycleState(models.TextChoices):
+        STOPPED = "stopped", "Stopped"
+        STARTING = "starting", "Starting"
+        RUNNING = "running", "Running"
+        STOPPING = "stopping", "Stopping"
+        UNKNOWN = "unknown", "Unknown"
+
     name = models.CharField(max_length=255, unique=True)
     user = models.ForeignKey(Profile, on_delete=models.CASCADE, related_name='instances')
     preset = models.FileField(upload_to=user_presets_directory_path, unique=True)
@@ -55,6 +70,18 @@ class Instances(models.Model):
     is_ready = models.BooleanField(default=False)
     is_running = models.BooleanField(default=False)
     is_admin_instance = models.BooleanField(default=False)
+    run_id = models.UUIDField(null=True, blank=True)
+    process_created_at = models.FloatField(null=True, blank=True)
+    process_executable = models.CharField(max_length=1024, null=True, blank=True)
+    lifecycle_task_id = models.CharField(max_length=255, null=True, blank=True)
+    start_claimed_at = models.DateTimeField(null=True, blank=True)
+    timeout_task_id = models.CharField(max_length=255, null=True, blank=True)
+    lifecycle_state = models.CharField(
+        max_length=16,
+        choices=LifecycleState.choices,
+        default=LifecycleState.STOPPED,
+    )
+    shutdown_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -90,7 +117,9 @@ class InstanceTask(models.Model):
     )
     kind = models.CharField(max_length=16, choices=Kind.choices)
     created_at = models.DateTimeField(auto_now_add=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
+    superseded_at = models.DateTimeField(null=True, blank=True)
 
     def __str__(self):
         return f"{self.kind}:{self.task_id}"

@@ -1,11 +1,12 @@
 from contextlib import contextmanager
 from datetime import timedelta
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 from django.contrib.auth import get_user_model
+from django.core.files.storage import FileSystemStorage
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TransactionTestCase
 from rest_framework.test import APIClient
 
 from main.instance_tasks import create_instance_task_binding
@@ -16,7 +17,18 @@ from main.tasks import start_server_task, stop_server_task
 User = get_user_model()
 
 
-class InstancePermissionTests(TestCase):
+def storage_path_override(log_file_name, on_log_file_path):
+    original_path = FileSystemStorage.path
+
+    def resolve_path(storage, name):
+        if name == log_file_name:
+            return on_log_file_path()
+        return original_path(storage, name)
+
+    return resolve_path
+
+
+class InstancePermissionTests(TransactionTestCase):
     def setUp(self):
         self.owner = User.objects.create_user(username="owner", password="test-password")
         self.other = User.objects.create_user(username="other", password="test-password")
@@ -53,6 +65,12 @@ class InstancePermissionTests(TestCase):
             port=port,
             is_admin_instance=is_admin_instance,
             is_running=is_running,
+            lifecycle_state=("running" if is_running else "stopped"),
+            run_id=(uuid4() if is_running else None),
+            process_created_at=(100.5 if is_running else None),
+            process_executable=("/isolated/arma3/arma3server_x64" if is_running else None),
+            pid=(12345 if is_running else None),
+            start_file_path=f"/isolated/arma3/start-{name}.sh",
         )
         if with_log:
             instance.log_file.save(
@@ -141,7 +159,7 @@ class InstancePermissionTests(TestCase):
         with (
             patch("main.views.psutil.disk_usage", return_value=MagicMock(free=10**12)),
             patch("main.views.config.get", return_value="/isolated/mods"),
-            patch("main.views.enqueue_instance_task", return_value="invented-task-id"),
+            patch("main.views.dispatch_instance_task", return_value="invented-task-id"),
         ):
             for admin_target in (False, True):
                 for label, method, suffix, options, allowed_status in action_cases:
@@ -188,13 +206,7 @@ class InstancePermissionTests(TestCase):
             patch("main.views.check_installed", return_value=([], [])),
             patch("main.views.check_sh_file_exists", return_value=True),
             patch("main.views.config.get", return_value="/isolated/arma3"),
-            patch("main.views.enqueue_instance_task", return_value="start-task-id") as enqueue,
-            patch(
-                "main.views.instance_timeout_task.apply_async",
-                return_value=SimpleNamespace(id="timeout-task-id"),
-            ),
-            patch("main.views.cache.get", return_value=None),
-            patch("main.views.cache.set"),
+            patch("main.views.dispatch_instance_task", return_value="start-task-id") as dispatch,
         ):
             start_response = self.client.post(
                 f"/api/instances/{instance.pk}/start/", {}, format="json"
@@ -202,29 +214,115 @@ class InstancePermissionTests(TestCase):
 
         self.assertEqual(start_response.status_code, 202)
         self.assertEqual(start_response.data, {"task_id": "start-task-id"})
-        enqueue.assert_called_once_with(
-            instance,
-            "start",
-            start_server_task,
-            kwargs={"instance_id": instance.pk, "arma3_dir": "/isolated/arma3"},
+        self.assertEqual(dispatch.call_count, 1)
+        binding, task, kwargs = dispatch.call_args.args[0], dispatch.call_args.args[1], dispatch.call_args.kwargs["kwargs"]
+        self.assertEqual(binding.kind, "start")
+        self.assertEqual(task, start_server_task)
+        self.assertEqual(
+            {key: value for key, value in kwargs.items() if key != "run_id"},
+            {"instance_id": instance.pk, "arma3_dir": "/isolated/arma3"},
         )
 
         instance.is_running = True
-        instance.save(update_fields=["is_running"])
-        with patch("main.views.enqueue_instance_task", return_value="stop-task-id") as enqueue:
+        instance.lifecycle_state = "running"
+        instance.save(update_fields=["is_running", "lifecycle_state"])
+        with patch("main.views.dispatch_stop_reservation", return_value="stop-task-id") as dispatch_stop:
             stop_response = self.client.post(
                 f"/api/instances/{instance.pk}/stop/", {}, format="json"
             )
 
         self.assertEqual(stop_response.status_code, 202)
         self.assertEqual(stop_response.data, {"task_id": "stop-task-id"})
-        enqueue.assert_called_once_with(
-            instance,
-            "stop",
-            stop_server_task,
-            kwargs={"instance_id": instance.pk},
-        )
+        self.assertEqual(dispatch_stop.call_count, 1)
+        self.assertEqual(dispatch_stop.call_args.args[1], stop_server_task)
         self.assertEqual(staff_running_instance.is_running, True)
+
+    def test_start_rejects_missing_saved_script_path_even_when_named_script_exists(self):
+        instance = self.make_instance(self.owner, name="incomplete-start-snapshot")
+        instance.start_file_path = "  "
+        instance.save(update_fields=["start_file_path"])
+        self.authenticate_as(self.owner)
+
+        @contextmanager
+        def fake_operation_loggers(*args, **kwargs):
+            yield {"start": MagicMock()}
+
+        with (
+            patch("main.views.operation_loggers", side_effect=fake_operation_loggers),
+            patch("main.views.preset_parser", return_value=[]),
+            patch("main.views.check_installed", return_value=([], [])),
+            patch("main.views.check_sh_file_exists", return_value=True) as check_script,
+            patch("main.views.config.get", return_value="/isolated/arma3"),
+            patch(
+                "main.views.dispatch_instance_task",
+                return_value="unexpected-task-id",
+            ) as dispatch,
+        ):
+            response = self.client.post(
+                f"/api/instances/{instance.pk}/start/", {}, format="json"
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["message"],
+            "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem",
+        )
+        check_script.assert_called_once()
+        dispatch.assert_not_called()
+        instance.refresh_from_db()
+        self.assertEqual(instance.lifecycle_state, Instances.LifecycleState.STOPPED)
+        self.assertIsNone(instance.run_id)
+        self.assertIsNone(instance.process_executable)
+        self.assertFalse(InstanceTask.objects.filter(instance=instance).exists())
+
+    def test_start_rejects_log_path_that_storage_cannot_resolve(self):
+        instance = self.make_instance(
+            self.owner,
+            name="unavailable-log-path",
+            with_log=True,
+        )
+        self.authenticate_as(self.owner)
+
+        def unavailable_log_path():
+            raise NotImplementedError("remote storage has no local path")
+
+        @contextmanager
+        def fake_operation_loggers(*args, **kwargs):
+            yield {"start": MagicMock()}
+
+        with (
+            patch.object(
+                FileSystemStorage,
+                "path",
+                new=storage_path_override(
+                    instance.log_file.name,
+                    unavailable_log_path,
+                ),
+            ),
+            patch("main.views.operation_loggers", side_effect=fake_operation_loggers),
+            patch("main.views.preset_parser", return_value=[]),
+            patch("main.views.check_installed", return_value=([], [])),
+            patch("main.views.check_sh_file_exists", return_value=True),
+            patch("main.views.config.get", return_value="/isolated/arma3"),
+            patch(
+                "main.views.dispatch_instance_task",
+                return_value="unexpected-task-id",
+            ) as dispatch,
+        ):
+            response = self.client.post(
+                f"/api/instances/{instance.pk}/start/", {}, format="json"
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["message"],
+            "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem",
+        )
+        dispatch.assert_not_called()
+        instance.refresh_from_db()
+        self.assertEqual(instance.lifecycle_state, Instances.LifecycleState.STOPPED)
+        self.assertIsNone(instance.run_id)
+        self.assertFalse(InstanceTask.objects.filter(instance=instance).exists())
 
     def test_staff_start_limit_uses_target_owner_and_staff_stop_can_target_other_owner(self):
         owner_running_instance = self.make_instance(
@@ -245,36 +343,29 @@ class InstancePermissionTests(TestCase):
             patch("main.views.check_installed", return_value=([], [])),
             patch("main.views.check_sh_file_exists", return_value=True),
             patch("main.views.config.get", return_value="/isolated/arma3"),
-            patch("main.views.enqueue_instance_task", return_value="should-not-queue") as enqueue,
-            patch(
-                "main.views.instance_timeout_task.apply_async",
-                return_value=SimpleNamespace(id="timeout-task-id"),
-            ),
-            patch("main.views.cache.get", return_value=None),
-            patch("main.views.cache.set"),
+            patch("main.views.dispatch_instance_task", return_value="should-not-queue") as dispatch,
         ):
             rejected = self.client.post(
                 f"/api/instances/{target_instance.pk}/start/", {}, format="json"
             )
 
         self.assertEqual(rejected.status_code, 400)
-        enqueue.assert_not_called()
+        dispatch.assert_not_called()
 
         target_instance.is_running = True
-        target_instance.save(update_fields=["is_running"])
-        with patch("main.views.enqueue_instance_task", return_value="staff-stop-task") as enqueue:
+        target_instance.lifecycle_state = "running"
+        target_instance.run_id = uuid4()
+        target_instance.process_executable = "/isolated/arma3/arma3server_x64"
+        target_instance.save(update_fields=["is_running", "lifecycle_state", "run_id", "process_executable"])
+        with patch("main.views.dispatch_stop_reservation", return_value="staff-stop-task") as dispatch_stop:
             stopped = self.client.post(
                 f"/api/instances/{target_instance.pk}/stop/", {}, format="json"
             )
 
         self.assertEqual(stopped.status_code, 202)
         self.assertEqual(stopped.data, {"task_id": "staff-stop-task"})
-        enqueue.assert_called_once_with(
-            target_instance,
-            "stop",
-            stop_server_task,
-            kwargs={"instance_id": target_instance.pk},
-        )
+        self.assertEqual(dispatch_stop.call_count, 1)
+        self.assertEqual(dispatch_stop.call_args.args[1], stop_server_task)
         self.assertTrue(owner_running_instance.is_running)
 
     def test_preset_replacement_is_staff_only_and_uses_scoped_instance_lookup(self):
@@ -372,6 +463,8 @@ class InstancePermissionTests(TestCase):
             "is_ready": True,
             "is_running": True,
             "is_admin_instance": True,
+            "lifecycle_state": "running",
+            "shutdown_at": "2020-01-01T00:00:00Z",
             "start_file_path": "/attacker/start.sh",
             "log_file": "/attacker/server.log",
             "active_tasks": "attacker-task-id",
@@ -395,6 +488,8 @@ class InstancePermissionTests(TestCase):
         self.assertFalse(instance.is_ready)
         self.assertFalse(instance.is_running)
         self.assertFalse(instance.is_admin_instance)
+        self.assertEqual(instance.lifecycle_state, "stopped")
+        self.assertIsNone(instance.shutdown_at)
         self.assertFalse(instance.log_file)
         self.assertEqual(instance.start_file_path, "/isolated/generated-start.sh")
         self.assertEqual(response.data["result"]["user"]["username"], "owner")

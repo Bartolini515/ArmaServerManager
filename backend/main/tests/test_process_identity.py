@@ -342,8 +342,13 @@ class ProcessIdentityTests(unittest.TestCase):
             "PATH": "invented-path",
             "ASM_INSTANCE_RUN_ID": "prior-invented-run",
         }
-        fake_process = object()
+        fake_process = Mock()
+        fake_process.pid = 12345
+        fake_process.poll.return_value = None
         fake_thread = Mock()
+        identity = process_identity.ProcessIdentity(pid=12345, created_at=100.5)
+        verified_process = Mock()
+        verified_process.environ.return_value = {"ASM_INSTANCE_RUN_ID": "run-23"}
         with (
             patch.object(
                 start_server_module,
@@ -355,6 +360,16 @@ class ProcessIdentityTests(unittest.TestCase):
                 "Popen",
                 return_value=fake_process,
             ) as popen,
+            patch.object(
+                start_server_module,
+                "capture_process_identity",
+                return_value=identity,
+            ),
+            patch.object(
+                start_server_module,
+                "get_verified_process",
+                return_value=verified_process,
+            ),
             patch.object(start_server_module.threading, "Thread", return_value=fake_thread),
         ):
             returned = start_server_module.start_server(
@@ -362,9 +377,11 @@ class ProcessIdentityTests(unittest.TestCase):
                 "invented-start-file",
                 "invented-log-file",
                 run_id="run-23",
+                launch_signal_guard=Mock(return_value=True),
             )
 
         self.assertIs(returned, fake_process)
+        self.assertEqual(returned._asm_process_identity, identity)
         child_environment = popen.call_args.kwargs["env"]
         self.assertIsNot(child_environment, fake_parent_environment)
         self.assertEqual(child_environment["PATH"], "invented-path")
@@ -374,6 +391,81 @@ class ProcessIdentityTests(unittest.TestCase):
             "prior-invented-run",
         )
         fake_thread.start.assert_called_once_with()
+
+    def test_marker_mismatch_does_not_signal_through_popen_handle(self) -> None:
+        fake_process = Mock()
+        fake_process.pid = 12345
+        fake_process.poll.return_value = None
+        identity = process_identity.ProcessIdentity(pid=12345, created_at=100.5)
+        verified_process = Mock()
+        verified_process.environ.return_value = {"ASM_INSTANCE_RUN_ID": "wrong-run"}
+        launch_signal_guard = Mock(return_value=False)
+
+        with (
+            patch.object(start_server_module.subprocess, "Popen", return_value=fake_process),
+            patch.object(start_server_module, "capture_process_identity", return_value=identity),
+            patch.object(start_server_module, "get_verified_process", return_value=verified_process),
+        ):
+            with self.assertRaises(Exception) as raised:
+                start_server_module.start_server(
+                    "invented-arma-dir",
+                    "invented-start-file",
+                    "invented-log-file",
+                    run_id="run-23",
+                    launch_signal_guard=launch_signal_guard,
+                )
+
+        self.assertEqual(
+            raised.exception.__class__.__name__,
+            "PostLaunchMayBeLiveError",
+        )
+        self.assertEqual(raised.exception.launch_identity, identity)
+        launch_signal_guard.assert_not_called()
+        fake_process.terminate.assert_not_called()
+        fake_process.wait.assert_not_called()
+
+    def test_output_reader_start_failure_does_not_assume_child_is_stopped(self) -> None:
+        fake_process = Mock()
+        fake_process.pid = 12345
+        fake_process.poll.return_value = None
+        identity = process_identity.ProcessIdentity(pid=12345, created_at=100.5)
+        verified_process = Mock()
+        verified_process.environ.return_value = {"ASM_INSTANCE_RUN_ID": "run-23"}
+        output_thread = Mock()
+        output_thread.start.side_effect = RuntimeError("invented reader startup failure")
+        launch_signal_guard = Mock(return_value=True)
+
+        def capture_anchored_process(process, run_id):
+            process._asm_process_identity = identity
+            return identity
+
+        with (
+            patch.object(start_server_module.subprocess, "Popen", return_value=fake_process),
+            patch.object(
+                start_server_module,
+                "_capture_launch_identity",
+                side_effect=capture_anchored_process,
+            ),
+            patch.object(start_server_module, "get_verified_process", return_value=verified_process),
+            patch.object(start_server_module.threading, "Thread", return_value=output_thread),
+        ):
+            with self.assertRaises(Exception) as raised:
+                start_server_module.start_server(
+                    "invented-arma-dir",
+                    "invented-start-file",
+                    "invented-log-file",
+                    run_id="run-23",
+                    launch_signal_guard=launch_signal_guard,
+                )
+
+        self.assertEqual(
+            raised.exception.__class__.__name__,
+            "PostLaunchMayBeLiveError",
+        )
+        self.assertEqual(raised.exception.launch_identity, identity)
+        fake_process.terminate.assert_not_called()
+        fake_process.kill.assert_not_called()
+        launch_signal_guard.assert_not_called()
 
     def test_start_server_without_marker_keeps_legacy_popen_environment_behavior(self) -> None:
         fake_process = object()

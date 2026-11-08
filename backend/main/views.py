@@ -1,5 +1,7 @@
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
+from django.db.models import Q
+import os
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
 from .serializers import *
@@ -12,6 +14,7 @@ from knox.models import AuthToken
 import psutil
 import platform
 from django.db import transaction
+from uuid import uuid4
 from .modpreset.modpathing import check_installed
 from .modpreset.preset_extraction import preset_parser
 from .modpreset.start_files import generate_sh_file, check_sh_file_exists, generate_server_config
@@ -19,10 +22,46 @@ from .utils.config import config
 from .utils.operation_logging import operation_loggers
 from celery.result import AsyncResult
 from .tasks import *
-from .instance_tasks import enqueue_instance_task
-from django.core.cache import cache
-from servermanager.celery import app as celery_app
+from .instance_tasks import create_instance_task_binding, dispatch_instance_task
+from .instance_lifecycle import (
+    RESERVED_LIFECYCLE_STATES,
+    StopReservationRejected,
+    dispatch_stop_reservation,
+    is_instance_lifecycle_busy,
+    lifecycle_transaction,
+    require_lifecycle_autocommit,
+    reserve_stop,
+)
 User = get_user_model()
+
+
+class InstanceLifecycleBusy(RuntimeError):
+    """An instance changed lifecycle state before an operation was queued."""
+
+
+def enqueue_instance_task(instance, kind, task, *, kwargs):
+    """Create a lifecycle-safe task binding, then dispatch after the lock commits."""
+    require_lifecycle_autocommit()
+    with lifecycle_transaction():
+        locked = Instances.objects.select_for_update().filter(pk=instance.pk).first()
+        if locked is None:
+            raise InstanceLifecycleBusy("The instance no longer exists.")
+        blocking_tasks = InstanceTask.objects.filter(
+            instance=locked,
+            kind__in=(InstanceTask.Kind.START, InstanceTask.Kind.STOP),
+            finished_at__isnull=True,
+            superseded_at__isnull=True,
+        ).exists()
+        if (
+            locked.lifecycle_state != Instances.LifecycleState.STOPPED
+            or locked.is_running
+            or locked.pid is not None
+            or blocking_tasks
+        ):
+            raise InstanceLifecycleBusy("The instance has an active lifecycle operation.")
+        binding = create_instance_task_binding(locked, kind)
+    return dispatch_instance_task(binding, task, kwargs=kwargs)
+
 
 def message_response(data, message="Operacja się powiodła"):
     return Response({
@@ -139,6 +178,11 @@ class ModeratorPanelViewset(viewsets.ViewSet):
             user = Profile.objects.get(pk=pk)
         except Profile.DoesNotExist:
             return Response({"message": "Użytkownik nie istnieje"}, status=404)
+        if any(is_instance_lifecycle_busy(instance) for instance in user.instances.all()):
+            return Response(
+                {"message": "Nie można usunąć użytkownika podczas aktywnej operacji instancji"},
+                status=400,
+            )
         user.delete()
         return Response({"message": "Użytkownik usunięty"})
     
@@ -271,8 +315,13 @@ class InstancesViewset(viewsets.ModelViewSet):
         except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
         
-        if instance.is_running:
-            return Response({"message": "Nie można usunąć działającej instancji"}, status=400)
+        if is_instance_lifecycle_busy(instance):
+            message = (
+                "Nie można usunąć działającej instancji"
+                if instance.is_running
+                else "Nie można usunąć instancji podczas aktywnej operacji"
+            )
+            return Response({"message": message}, status=400)
         
         with transaction.atomic():
             instance.delete()
@@ -283,98 +332,271 @@ class InstancesViewset(viewsets.ModelViewSet):
     def start(self, request, pk=None):
         """Validate readiness and enqueue an asynchronous server start."""
         actor = self.request.user
-        
         try:
-            instance = self._get_authorized_instance(pk)
-            if instance.is_admin_instance and actor.is_staff:
-                operator = get_super_user()
-                if not operator:
-                    return Response({"message": "Nie znaleziono administratora."}, status=404)
-            else:
-                operator = actor
+            require_lifecycle_autocommit()
+        except RuntimeError:
+            return Response(
+                {"message": "Nie udało się rozpocząć zadania uruchamiania."},
+                status=500,
+            )
+
+        try:
+            queued = None
+            with lifecycle_transaction():
+                instance = self.filter_queryset(self.get_queryset()).select_for_update().filter(
+                    pk=pk
+                ).first()
+                if instance is None:
+                    return Response(
+                        {"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"},
+                        status=404,
+                    )
+                self.check_object_permissions(request, instance)
+                if instance.is_admin_instance and actor.is_staff:
+                    operator = get_super_user()
+                    if not operator:
+                        return Response({"message": "Nie znaleziono administratora."}, status=404)
+                else:
+                    operator = actor
+
+                if instance.lifecycle_state == Instances.LifecycleState.RUNNING:
+                    return Response({"message": "Instancja jest już uruchomiona"}, status=400)
+
+                if instance.lifecycle_state == Instances.LifecycleState.STARTING:
+                    existing_start = InstanceTask.objects.filter(
+                        pk=instance.lifecycle_task_id,
+                        instance=instance,
+                        kind=InstanceTask.Kind.START,
+                        finished_at__isnull=True,
+                        superseded_at__isnull=True,
+                    ).first()
+                    if existing_start:
+                        return Response({"task_id": existing_start.task_id}, status=202)
+                    return Response(
+                        {"message": "Instancja ma niepewny stan uruchamiania."},
+                        status=400,
+                    )
+
+                if instance.lifecycle_state != Instances.LifecycleState.STOPPED:
+                    return Response(
+                        {"message": "Nie można uruchomić instancji w nieznanym stanie."},
+                        status=400,
+                    )
+                if instance.is_running or instance.pid is not None:
+                    return Response(
+                        {"message": "Nie można uruchomić instancji w nieznanym stanie."},
+                        status=400,
+                    )
+
+                active_tasks = InstanceTask.objects.filter(
+                    instance=instance,
+                    finished_at__isnull=True,
+                    superseded_at__isnull=True,
+                )
+                if active_tasks.exists():
+                    return Response(
+                        {"message": "Instancja ma aktywne zadania. Poczekaj na ich zakończenie."},
+                        status=400,
+                    )
+
+                if not instance.is_admin_instance:
+                    owner_reserved = Instances.objects.filter(
+                        user=instance.user,
+                        is_admin_instance=False,
+                    ).filter(
+                        Q(lifecycle_state__in=RESERVED_LIFECYCLE_STATES)
+                        | Q(is_running=True)
+                        | Q(pid__isnull=False)
+                    ).exclude(pk=instance.pk).exists()
+                    if owner_reserved:
+                        return Response(
+                            {"message": "Nie można posiadać uruchomionej więcej niż jednej instancji"},
+                            status=400,
+                        )
+
+                if (
+                    not actor.is_staff
+                    and Instances.objects.filter(is_admin_instance=False)
+                    .filter(
+                        Q(lifecycle_state__in=RESERVED_LIFECYCLE_STATES)
+                        | Q(is_running=True)
+                        | Q(pid__isnull=False)
+                    )
+                    .count()
+                    >= 5
+                ):
+                    return Response(
+                        {"message": "Przekroczono generalny limit 5 uruchomionych instancji. Spróbuj ponownie później."},
+                        status=403,
+                    )
+
+                arma3_dir = config.get("paths.arma3")
+                expected_executable = os.path.realpath(
+                    os.path.join(arma3_dir, "arma3server_x64")
+                )
+                with operation_loggers(
+                    config.get("paths.logs_directory", "/logs"),
+                    operator.username,
+                    ("start",),
+                ) as loggers:
+                    start_logger = loggers["start"]
+                    workshop_ids = preset_parser(
+                        instance.preset.path,
+                        log_callback=start_logger.info,
+                    )
+                    mods_dir = config.get("paths.mods_directory")
+                    if check_installed(
+                        wids=workshop_ids,
+                        mods_dir=mods_dir,
+                        log_callback=start_logger.info,
+                    )[1]:
+                        instance.is_ready = False
+                        instance.save(update_fields=["is_ready"])
+                        return Response(
+                            {"message": "Niektóre mody są niezainstalowane. Proszę je najpierw pobrać."},
+                            status=400,
+                        )
+                    if not check_sh_file_exists(
+                        instance.name,
+                        log_callback=start_logger.info,
+                    ):
+                        return Response(
+                            {"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"},
+                            status=400,
+                        )
+                    if not instance.start_file_path or not instance.start_file_path.strip():
+                        return Response(
+                            {"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"},
+                            status=400,
+                        )
+                    if not instance.log_file:
+                        log_filename = "log_file.txt"
+                        log_content = (
+                            f"Log file for instance '{instance.name}' created at {timezone.now()}.\n"
+                        )
+                        content_file = ContentFile(
+                            log_content.encode("utf-8"),
+                            name=log_filename,
+                        )
+                        instance.log_file.save(log_filename, content_file, save=True)
+                    try:
+                        if not os.fspath(instance.log_file.path).strip():
+                            raise ValueError("The log file path is empty.")
+                    except Exception:
+                        return Response(
+                            {"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"},
+                            status=400,
+                        )
+
+                binding = create_instance_task_binding(instance, InstanceTask.Kind.START)
+                run_id = uuid4()
+                instance.run_id = run_id
+                instance.process_created_at = None
+                instance.process_executable = expected_executable
+                instance.lifecycle_task_id = binding.task_id
+                instance.start_claimed_at = None
+                instance.timeout_task_id = None
+                instance.lifecycle_state = Instances.LifecycleState.STARTING
+                instance.shutdown_at = None
+                instance.pid = None
+                instance.is_running = False
+                instance.save(
+                    update_fields=[
+                        "run_id",
+                        "process_created_at",
+                        "process_executable",
+                        "lifecycle_task_id",
+                        "start_claimed_at",
+                        "timeout_task_id",
+                        "lifecycle_state",
+                        "shutdown_at",
+                        "pid",
+                        "is_running",
+                    ]
+                )
+                queued = (binding, instance.pk, str(run_id), arma3_dir)
         except Http404:
             return Response({"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"}, status=404)
+        if queued is None:
+            return Response(
+                {"message": "Nie udało się rozpocząć zadania uruchamiania."},
+                status=500,
+            )
 
-        if instance.is_running:
-            return Response({"message": "Instancja jest już uruchomiona"}, status=400)
-
-        operation_owner = instance.user
-        if (
-            self.queryset.filter(user=operation_owner, is_running=True).exists()
-            and not instance.is_admin_instance
-        ):
-            return Response({"message": "Nie można posiadać uruchomionej więcej niż jednej instancji"}, status=400)
-        
-        if (
-            self.queryset.filter(is_admin_instance=False, is_running=True).count() >= 5
-            and not actor.is_staff
-        ):
-            return Response({"message": "Przekroczono generalny limit 5 uruchomionych instancji. Spróbuj ponownie później."}, status=403)
-        
-        with operation_loggers(
-            config.get("paths.logs_directory", "/logs"),
-            operator.username,
-            ("start",),
-        ) as loggers:
-            start_logger = loggers["start"]
-
-            if not instance.log_file:
-                log_filename = f"log_file.txt"
-                log_content = f"Log file for instance '{instance.name}' created at {timezone.now()}.\n"
-                content_file = ContentFile(log_content.encode('utf-8'), name=log_filename)
-                instance.log_file.save(log_filename, content_file, save=True)
-
-            workshop_ids = preset_parser(instance.preset.path, log_callback=start_logger.info)
-            mods_dir = config.get("paths.mods_directory")
-            if check_installed(wids=workshop_ids, mods_dir=mods_dir, log_callback=start_logger.info)[1]:
-                instance.is_ready = False
-                instance.save()
-                return Response({"message": "Niektóre mody są niezainstalowane. Proszę je najpierw pobrać."}, status=400)
-            if not check_sh_file_exists(instance.name, log_callback=start_logger.info):
-                return Response({"message": "Plik startowy instancji nie istnieje. Skontaktuj się z administratorem"}, status=400)
-
-            try:
-                task_id = enqueue_instance_task(
-                    instance,
-                    "start",
-                    start_server_task,
-                    kwargs={
-                        "instance_id": instance.id,
-                        "arma3_dir": config.get("paths.arma3"),
-                    },
-                )
-            except Exception:
-                start_logger.exception("Nie udało się rozpocząć zadania uruchamiania.")
-                return Response({"message": "Nie udało się rozpocząć zadania uruchamiania."}, status=500)
-
-            if not instance.is_admin_instance:
-                cache_key = f"terminate_task_{instance.id}"
-                old_terminate_task = cache.get(cache_key)
-                if old_terminate_task:
-                    celery_app.control.revoke(old_terminate_task, terminate=True)
-                async_result = instance_timeout_task.apply_async(args=[instance.id], countdown=3600)
-                cache.set(cache_key, async_result.id, timeout=3660) # longer than task timeout
-
-            return Response({"task_id": task_id}, status=202)
+        binding, instance_id, run_id, arma3_dir = queued
+        try:
+            task_id = dispatch_instance_task(
+                binding,
+                start_server_task,
+                kwargs={
+                    "instance_id": instance_id,
+                    "arma3_dir": arma3_dir,
+                    "run_id": run_id,
+                },
+            )
+        except Exception:
+            delivery_confirmed = False
+            with lifecycle_transaction():
+                current = Instances.objects.select_for_update().filter(
+                    pk=instance_id,
+                    run_id=run_id,
+                    lifecycle_task_id=binding.task_id,
+                ).first()
+                current_binding = InstanceTask.objects.filter(pk=binding.task_id).first()
+                if current is not None and (
+                    current.start_claimed_at is not None
+                    or (
+                        current_binding is not None
+                        and current_binding.claimed_at is not None
+                    )
+                ):
+                    delivery_confirmed = True
+                elif current is not None:
+                    if current_binding is not None:
+                        current_binding.delete()
+                    current.lifecycle_state = Instances.LifecycleState.STOPPED
+                    current.is_running = False
+                    current.pid = None
+                    current.run_id = None
+                    current.process_created_at = None
+                    current.process_executable = None
+                    current.lifecycle_task_id = None
+                    current.start_claimed_at = None
+                    current.timeout_task_id = None
+                    current.shutdown_at = None
+                    current.save()
+            if delivery_confirmed:
+                return Response({"task_id": binding.task_id}, status=202)
+            return Response(
+                {"message": "Nie udało się rozpocząć zadania uruchamiania."},
+                status=500,
+            )
+        return Response({"task_id": task_id}, status=202)
 
     @action(detail=True, methods=["post"], url_path="stop")
     def stop(self, request, pk=None):
-        """Enqueue process termination for a running instance."""
+        """Reserve and enqueue a verified stop for the current process run."""
+        try:
+            require_lifecycle_autocommit()
+        except RuntimeError:
+            return Response({"message": "Nie udało się rozpocząć zadania zatrzymania."}, status=500)
         try:
             instance = self._get_authorized_instance(pk)
         except Http404:
             return Response({"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"}, status=404)
-
-        if not instance.is_running:
-            return Response({"message": "Instancja jest już zatrzymana"}, status=400)
-
         try:
-            task_id = enqueue_instance_task(
-                instance,
-                "stop",
-                stop_server_task,
-                kwargs={"instance_id": instance.id},
+            reservation = reserve_stop(instance.pk)
+        except StopReservationRejected as exc:
+            if str(exc) == "missing":
+                return Response({"message": "Instancja nie została znaleziona. Skontaktuj się z administratorem"}, status=404)
+            if str(exc) == "not_running" and instance.lifecycle_state == Instances.LifecycleState.STOPPED:
+                return Response({"message": "Instancja jest już zatrzymana"}, status=400)
+            return Response(
+                {"message": "Nie można bezpiecznie zatrzymać instancji w nieznanym stanie."},
+                status=400,
             )
+        try:
+            task_id = dispatch_stop_reservation(reservation, stop_server_task)
         except Exception:
             return Response({"message": "Nie udało się rozpocząć zadania zatrzymania."}, status=500)
         return Response({"task_id": task_id}, status=202)
@@ -393,8 +615,16 @@ class InstancesViewset(viewsets.ModelViewSet):
         if not instance.is_admin_instance:
             return Response({"message": "To nie jest instancja administracyjna."}, status=400)
         
-        if instance.is_running:
-            return Response({"message": "Nie można zmienić presetu działającej instancji."}, status=400)
+        if is_instance_lifecycle_busy(instance):
+            message = (
+                "Nie można zmienić presetu działającej instancji."
+                if instance.is_running
+                else "Nie można zmienić presetu podczas aktywnej operacji instancji."
+            )
+            return Response(
+                {"message": message},
+                status=400,
+            )
         
         
 
@@ -437,6 +667,13 @@ class InstancesViewset(viewsets.ModelViewSet):
     def download_mods(self, request, pk=None):
         """Enqueue Steam Workshop downloads for the instance preset."""
         try:
+            require_lifecycle_autocommit()
+        except RuntimeError:
+            return Response(
+                {"message": "Nie udało się rozpocząć zadania pobierania."},
+                status=500,
+            )
+        try:
             instance = self._get_authorized_instance(pk)
         except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
@@ -454,7 +691,7 @@ class InstancesViewset(viewsets.ModelViewSet):
         try:
             task_id = enqueue_instance_task(
                 instance,
-                "download",
+                InstanceTask.Kind.DOWNLOAD,
                 download_mods_task,
                 kwargs={
                     "instance_id": instance.id,
@@ -463,6 +700,11 @@ class InstancesViewset(viewsets.ModelViewSet):
                     "file_path": instance.preset.path,
                     "mods_directory": config.get("paths.mods_directory"),
                 },
+            )
+        except InstanceLifecycleBusy:
+            return Response(
+                {"message": "Nie można pobierać modów podczas aktywnej operacji instancji."},
+                status=400,
             )
         except Exception:
             return Response(
@@ -480,8 +722,19 @@ class InstancesViewset(viewsets.ModelViewSet):
                 instance__user=request.user,
                 instance__is_admin_instance=False,
             )
-        if not bindings.exists():
+        binding = bindings.first()
+        if binding is None:
             return Response({"message": "Zadanie nie zostało znalezione"}, status=404)
+
+        if binding.superseded_at is not None:
+            return Response(
+                {
+                    "id": task_id,
+                    "state": "REVOKED",
+                    "result": {"status": "Zadanie zostało zastąpione przez nowszą próbę zatrzymania."},
+                },
+                status=200,
+            )
 
         task_result = AsyncResult(task_id)
         if not task_result:
@@ -568,8 +821,16 @@ class InstancesViewset(viewsets.ModelViewSet):
         except Http404:
             return Response({"message": "Instancja nie została znaleziona"}, status=404)
         
-        if instance.is_running:
-            return Response({"message": "Nie można usunąć logów podczas działania instancji"}, status=400)
+        if is_instance_lifecycle_busy(instance):
+            message = (
+                "Nie można usunąć logów podczas działania instancji"
+                if instance.is_running
+                else "Nie można usunąć logów podczas aktywnej operacji instancji"
+            )
+            return Response(
+                {"message": message},
+                status=400,
+            )
 
         if not instance.log_file:
             return Response({"message": "Brak logów do usunięcia"}, status=404)

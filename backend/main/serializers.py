@@ -121,7 +121,10 @@ class InstanceSerializer(serializers.ModelSerializer):
     def get_active_tasks(self, instance):
         """Return the newest unfinished task ID for each operation kind."""
         active_tasks = {}
-        bindings = instance.tasks.filter(finished_at__isnull=True).order_by(
+        bindings = instance.tasks.filter(
+            finished_at__isnull=True,
+            superseded_at__isnull=True,
+        ).order_by(
             "kind", "-created_at", "task_id"
         )
         for binding in bindings:
@@ -151,7 +154,7 @@ class InstanceSerializer(serializers.ModelSerializer):
         model = Instances
         fields = ('id', 'name', 'user', 'preset', 'log_file', 'start_file_path', 'port', 
                   'pid', 'is_ready', 'is_running', 'is_admin_instance', 'created_at',
-                  'active_tasks')
+                  'lifecycle_state', 'shutdown_at', 'active_tasks')
         read_only_fields = (
             'id',
             'user',
@@ -163,6 +166,8 @@ class InstanceSerializer(serializers.ModelSerializer):
             'is_running',
             'is_admin_instance',
             'created_at',
+            'lifecycle_state',
+            'shutdown_at',
         )
         
 # MissionsSerializers

@@ -6,7 +6,7 @@ from functools import wraps
 import sys
 from uuid import uuid4
 
-from celery.exceptions import Retry
+from celery.exceptions import Ignore, Retry
 from django.db import connection, transaction
 from django.utils import timezone
 
@@ -38,17 +38,37 @@ def create_instance_task_binding(instance, kind: str) -> InstanceTask:
     )
 
 
-def dispatch_instance_task(binding: InstanceTask, task, *, kwargs: dict) -> str:
+def dispatch_instance_task(
+    binding: InstanceTask,
+    task,
+    *,
+    kwargs: dict,
+    preserve_binding_on_error: bool = False,
+) -> str:
     """Dispatch a committed binding and remove it if enqueue fails.
 
     This primitive can run from a Task 5 ``transaction.on_commit`` callback.
     It rejects calls while any outer or manual transaction is still active.
+    ``preserve_binding_on_error`` is reserved for republishing an existing
+    deadline-owned binding whose broker acknowledgement is ambiguous.
     """
     _require_post_commit_dispatch()
+    current_binding = InstanceTask.objects.filter(pk=binding.task_id).first()
+    if (
+        current_binding is None
+        or current_binding.finished_at is not None
+        or current_binding.superseded_at is not None
+    ):
+        raise RuntimeError("Instance task binding is no longer dispatchable.")
     try:
         task.apply_async(kwargs=kwargs, task_id=binding.task_id)
     except Exception:
-        InstanceTask.objects.filter(pk=binding.task_id).delete()
+        if not preserve_binding_on_error:
+            InstanceTask.objects.filter(
+                pk=binding.task_id,
+                claimed_at__isnull=True,
+                superseded_at__isnull=True,
+            ).delete()
         raise
     return binding.task_id
 
@@ -70,23 +90,27 @@ def mark_instance_task_finished(task_id: str | None) -> None:
     """Set a registered task's terminal timestamp; unregistered task IDs are safe."""
     if not task_id:
         return
-    InstanceTask.objects.filter(pk=task_id, finished_at__isnull=True).update(
+    InstanceTask.objects.filter(
+        pk=task_id,
+        finished_at__isnull=True,
+        superseded_at__isnull=True,
+    ).update(
         finished_at=timezone.now()
     )
 
 
 def track_instance_task(function):
-    """Finish persisted bindings after terminal task execution, preserving retry."""
+    """Finish bindings after terminal execution, preserving retry and Ignore."""
     @wraps(function)
     def wrapped(task, *args, **kwargs):
-        retry_pending = False
+        unfinished_delivery = False
         try:
             result = function(task, *args, **kwargs)
-            retry_pending = isinstance(result, Retry)
+            unfinished_delivery = isinstance(result, (Retry, Ignore))
             return result
         finally:
             current_exception = sys.exc_info()[1]
-            if not retry_pending and not isinstance(current_exception, Retry):
+            if not unfinished_delivery and not isinstance(current_exception, (Retry, Ignore)):
                 request = getattr(task, "request", None)
                 mark_instance_task_finished(getattr(request, "id", None))
 
