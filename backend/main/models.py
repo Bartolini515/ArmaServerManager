@@ -109,6 +109,13 @@ class InstanceTask(models.Model):
         STOP = "stop", "Stop"
         DOWNLOAD = "download", "Download"
 
+    class AttentionReason(models.TextChoices):
+        PROCESS_CLEANUP_UNCONFIRMED = (
+            "process_cleanup_unconfirmed",
+            "Process cleanup unconfirmed",
+        )
+        WORKER_STATE_UNVERIFIED = "worker_state_unverified", "Worker state unverified"
+
     task_id = models.CharField(primary_key=True, max_length=255)
     instance = models.ForeignKey(
         Instances,
@@ -120,6 +127,14 @@ class InstanceTask(models.Model):
     claimed_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
     superseded_at = models.DateTimeField(null=True, blank=True)
+    requires_attention = models.BooleanField(default=False)
+    attention_reason = models.CharField(
+        max_length=64,
+        choices=AttentionReason.choices,
+        blank=True,
+        default="",
+    )
+    attention_workspace = models.CharField(max_length=2048, blank=True, default="")
 
     def __str__(self):
         return f"{self.kind}:{self.task_id}"

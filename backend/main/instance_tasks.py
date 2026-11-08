@@ -94,6 +94,7 @@ def mark_instance_task_finished(task_id: str | None) -> None:
         pk=task_id,
         finished_at__isnull=True,
         superseded_at__isnull=True,
+        requires_attention=False,
     ).update(
         finished_at=timezone.now()
     )
