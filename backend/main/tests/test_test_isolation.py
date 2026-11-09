@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+from contextlib import ExitStack
 import importlib
 import os
 from pathlib import Path
@@ -119,6 +120,52 @@ class TestIsolationTests(SimpleTestCase):
             [],
             f"Socket APIs have no process-installed isolation guard: {unguarded_apis}",
         )
+
+    def test_network_guard_blocks_hostname_resolution_before_os_calls(self):
+        test_root = Path(os.environ["ASM_TEST_ROOT"]).resolve()
+        fake_repository = test_root / "resolver-guard-fixture"
+        host = "resolver-guard.invalid"
+        resolver_cases = {
+            "getaddrinfo": (host, "https"),
+            "gethostbyname": (host,),
+            "gethostbyname_ex": (host,),
+            "gethostbyaddr": ("192.0.2.19",),
+            "getnameinfo": (
+                ("192.0.2.19", 443),
+                getattr(socket, "NI_NAMEREQD", 0),
+            ),
+        }
+        entrypoints = [
+            name for name in resolver_cases if hasattr(socket, name)
+        ]
+        self.assertIn("getaddrinfo", entrypoints)
+        sentinel_calls = []
+
+        def resolver_sentinel(name):
+            def fail_fast(*args, **kwargs):
+                sentinel_calls.append(name)
+                raise AssertionError(f"Resolver sentinel fired for {name}")
+
+            return fail_fast
+
+        with ExitStack() as stack:
+            for name in entrypoints:
+                stack.enter_context(
+                    patch.object(socket, name, side_effect=resolver_sentinel(name))
+                )
+            restore_guards = _install_isolation_guards(fake_repository)
+            try:
+                for name in entrypoints:
+                    with self.subTest(resolver=name):
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            "blocked external network or host process access",
+                        ):
+                            getattr(socket, name)(*resolver_cases[name])
+            finally:
+                restore_guards()
+
+        self.assertEqual(sentinel_calls, [])
 
     def test_filesystem_guard_checks_both_rename_paths(self):
         test_root = Path(os.environ["ASM_TEST_ROOT"]).resolve()

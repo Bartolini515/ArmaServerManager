@@ -220,6 +220,19 @@ def _install_isolation_guards(repository_root: Path):
         if hasattr(socket.socket, _name):
             _replace(socket.socket, _name, _blocked_external_call)
 
+    # Hostname lookups reach the operating system resolver directly instead
+    # of going through socket connect/send methods, so guard those entrypoints
+    # explicitly in the isolated test runner.
+    for _name in (
+        "getaddrinfo",
+        "gethostbyname",
+        "gethostbyname_ex",
+        "gethostbyaddr",
+        "getnameinfo",
+    ):
+        if hasattr(socket, _name):
+            _replace(socket, _name, _blocked_external_call)
+
     # These are the only psutil operations used by the task layer to identify
     # or control host server processes. System metric reads remain available.
     import psutil
