@@ -397,3 +397,5 @@ backend/data/*
 !media
 backend/media/*
 !backend/media/.gitkeep
+
+backend/staticfiles/*
