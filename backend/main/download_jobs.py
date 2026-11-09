@@ -799,13 +799,12 @@ def _best_effort_progress(
 
 
 def _safe_worker_error(exc: BaseException, redactor: SteamSecretRedactor | None):
-    if isinstance(exc, SteamCommandError):
-        if isinstance(exc, CleanupUncertainError):
-            return SteamCommandError(
-                "Nie udało się pobrać modów. Sprawdź logi operacji.",
-                diagnostic=CleanupUncertainError.public_diagnostic,
-            )
-        diagnostic = safe_steam_diagnostic(exc, redactor)
+    if isinstance(exc, CleanupUncertainError):
+        diagnostic = CleanupUncertainError.public_diagnostic
+    elif redactor is None:
+        # Preparation can fail before a credential redactor exists. Do not
+        # inspect or format the original exception in this branch.
+        diagnostic = "Preparation failed before download setup; details omitted"
     else:
         diagnostic = safe_steam_diagnostic(exc, redactor)
     return SteamCommandError(

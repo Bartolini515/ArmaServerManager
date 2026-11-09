@@ -3,6 +3,7 @@ import logging
 import socket
 import tempfile
 import threading
+import traceback
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -31,6 +32,7 @@ from main.instance_tasks import create_instance_task_binding
 from main.models import InstanceTask, Instances, Ports
 from main.steamcmd.processes import CleanupUncertainError
 from main.tasks import download_mods_task
+from main.utils.steam_errors import SteamCommandError
 
 
 User = get_user_model()
@@ -1024,6 +1026,101 @@ class DownloadWorkerTests(TransactionTestCase):
                 binding.refresh_from_db()
                 self.assertFalse(instance.is_ready)
                 self.assertIsNotNone(binding.claimed_at)
+
+    def test_preparation_failure_without_redactor_is_safe_and_finishes_binding(self):
+        from main import download_jobs
+
+        instance = self.make_instance(ready=True)
+        binding, _reused = reserve_download(instance.pk)
+        private_values = (
+            "INVENTED_PREP_USERNAME_7f31",
+            "INVENTED_PREP_PASSWORD_a921",
+            "INVENTED_PREP_SHARED_SECRET_c840",
+        )
+        preparation_error = RuntimeError(";".join(private_values))
+
+        with (
+            patch("main.download_jobs.config.snapshot", side_effect=preparation_error) as snapshot,
+            patch(
+                "main.download_jobs._validate_current_preset",
+                side_effect=AssertionError("preset validation must not run"),
+            ) as validate_preset,
+            patch(
+                "main.download_jobs._new_download_lease",
+                side_effect=AssertionError("Redis lease creation must not run"),
+            ) as lease_factory,
+            patch(
+                "main.download_jobs.operation_loggers",
+                side_effect=AssertionError("operation logging must not run"),
+            ) as operation_loggers,
+            patch(
+                "main.download_jobs.preset_parser",
+                side_effect=AssertionError("preset parsing must not run"),
+            ) as preset_parser,
+            patch(
+                "main.download_jobs.check_installed",
+                side_effect=AssertionError("host file checks must not run"),
+            ) as check_installed,
+            patch(
+                "main.download_jobs.download_mods",
+                side_effect=AssertionError("SteamCMD must not run"),
+            ) as downloader,
+            bound_task_request(download_mods_task, binding.task_id),
+        ):
+            with self.assertRaises(SteamCommandError) as raised:
+                download_mods_task.run(instance_id=instance.pk)
+
+        failure = raised.exception
+        diagnostic = failure.diagnostic
+        formatted_traceback = "".join(
+            traceback.format_exception(
+                type(failure),
+                failure,
+                failure.__traceback__,
+            )
+        )
+        self.assertEqual(str(failure), "Nie udało się pobrać modów. Sprawdź logi operacji.")
+        self.assertEqual(
+            diagnostic,
+            "Preparation failed before download setup; details omitted",
+        )
+        self.assertTrue(failure.__suppress_context__)
+        for private_value in private_values:
+            self.assertNotIn(private_value, diagnostic)
+            self.assertNotIn(private_value, formatted_traceback)
+            self.assertNotIn(private_value, repr(failure))
+
+        snapshot.assert_called_once_with()
+        for boundary in (
+            validate_preset,
+            lease_factory,
+            operation_loggers,
+            preset_parser,
+            check_installed,
+            downloader,
+        ):
+            boundary.assert_not_called()
+        instance.refresh_from_db()
+        binding.refresh_from_db()
+        self.assertFalse(instance.is_ready)
+        self.assertIsNotNone(binding.claimed_at)
+        self.assertIsNotNone(binding.finished_at)
+        self.assertFalse(binding.requires_attention)
+
+        client = APIClient()
+        client.force_authenticate(user=self.owner)
+        with patch(
+            "main.views.AsyncResult",
+            return_value=SimpleNamespace(status="FAILURE", result=failure),
+        ) as async_result:
+            response = client.get(f"/api/instances/task_status/{binding.task_id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["state"], "FAILURE")
+        self.assertEqual(response.data["result"], {"status": "Nie udało się wykonać zadania."})
+        async_result.assert_called_once_with(binding.task_id)
+        for private_value in private_values:
+            self.assertNotIn(private_value, repr(response.data))
 
     def test_worker_fails_when_post_download_verification_still_finds_missing_content(self):
         from main import download_jobs
