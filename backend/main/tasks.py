@@ -53,8 +53,16 @@ def download_mods_task(
 
 @shared_task(bind=True)
 @track_instance_task
-def start_server_task(self, instance_id: int, arma3_dir: str, run_id: str) -> dict:
+def start_server_task(
+    self,
+    instance_id: int,
+    run_id: str,
+    arma3_dir: str | None = None,
+) -> dict:
     """Launch only the claimed reservation and persist verified process identity."""
+    # Older queued messages included this now-unused host path. It is accepted
+    # for delivery compatibility but never used as a filesystem authority.
+    del arma3_dir
     task_id = getattr(getattr(self, "request", None), "id", None)
     snapshot = None
     ignore_delivery = False
@@ -100,15 +108,6 @@ def start_server_task(self, instance_id: int, arma3_dir: str, run_id: str) -> di
         task_id,
     )
 
-    def launch_signal_guard(operation, process):
-        return _signal_if_current_start_launch(
-            instance_id,
-            str(run_id),
-            task_id,
-            operation,
-            process,
-        )
-
     _update_task_state_safely(
         self,
         state="PROGRESS",
@@ -140,7 +139,6 @@ def start_server_task(self, instance_id: int, arma3_dir: str, run_id: str) -> di
             snapshot.start_file_path,
             log_file_path,
             run_id=str(run_id),
-            launch_signal_guard=launch_signal_guard,
         )
     except Retry:
         raise
@@ -580,47 +578,6 @@ def _signal_if_current_start_attempt(
         if process is None:
             return False
         getattr(process, operation)()
-        return True
-
-
-def _signal_if_current_start_launch(
-    instance_id: int,
-    run_id: str,
-    task_id: str,
-    operation: str,
-    process,
-) -> bool:
-    """Signal only a Popen child with verified birth, run marker and attempt."""
-    if operation != "terminate":
-        raise ValueError("Only terminate is allowed for Popen-anchored cleanup.")
-    identity = getattr(process, "_asm_process_identity", None)
-    try:
-        if not isinstance(identity, ProcessIdentity) or process.pid != identity.pid:
-            return False
-    except Exception:
-        return False
-    with lifecycle_transaction():
-        instance = Instances.objects.select_for_update().filter(pk=instance_id).first()
-        binding = InstanceTask.objects.select_for_update().filter(pk=task_id).first()
-        if not _current_start_attempt_locked(instance, binding, run_id, task_id):
-            raise Ignore()
-        if getattr(process, "_asm_process_identity", None) != identity:
-            return False
-        try:
-            if process.poll() is not None:
-                return False
-            verified = _verify_signal_target(identity, run_id)
-        except UnverifiedProcessError:
-            return False
-        except Exception:
-            return False
-        if verified is None:
-            return False
-        if process.poll() is not None:
-            return False
-        # Birth, marker and attempt are revalidated under the lifecycle mutex;
-        # Popen's handle keeps this cleanup attached to its original child.
-        process.terminate()
         return True
 
 
@@ -1380,7 +1337,7 @@ def _stop_verified_instance(
     initial_udp = find_udp_processes(port_number, run_id, expected_executable)
     roots: dict[ProcessIdentity, str | None] = {}
     if direct_process is not None and direct_identity is not None:
-        roots[direct_identity] = None
+        roots[direct_identity] = expected_executable
     for identity in initial_udp:
         roots[identity] = expected_executable
     if not roots and direct_identity is None:
@@ -1419,6 +1376,14 @@ def _reconcile_instance_locked(instance: Instances) -> str | None:
         process = get_verified_process(identity)
         if process is not None:
             _process_marker(process, identity, run_id)
+            if not _process_executable_matches(
+                process,
+                identity,
+                instance.process_executable,
+            ):
+                raise UnverifiedProcessError(
+                    "Recorded process executable no longer matches"
+                )
             if instance.lifecycle_state == Instances.LifecycleState.STARTING:
                 if instance.timeout_task_id and instance.shutdown_at:
                     instance.lifecycle_state = Instances.LifecycleState.RUNNING

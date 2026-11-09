@@ -285,8 +285,11 @@ class InstancePermissionTests(TransactionTestCase):
         self.assertEqual(binding.kind, "start")
         self.assertEqual(task, start_server_task)
         self.assertEqual(
-            {key: value for key, value in kwargs.items() if key != "run_id"},
-            {"instance_id": instance.pk, "arma3_dir": str(self.arma_root)},
+            kwargs,
+            {
+                "instance_id": instance.pk,
+                "run_id": str(Instances.objects.get(pk=instance.pk).run_id),
+            },
         )
 
         instance.is_running = True

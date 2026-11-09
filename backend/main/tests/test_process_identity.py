@@ -377,7 +377,6 @@ class ProcessIdentityTests(unittest.TestCase):
                 "invented-start-file",
                 "invented-log-file",
                 run_id="run-23",
-                launch_signal_guard=Mock(return_value=True),
             )
 
         self.assertIs(returned, fake_process)
@@ -399,8 +398,6 @@ class ProcessIdentityTests(unittest.TestCase):
         identity = process_identity.ProcessIdentity(pid=12345, created_at=100.5)
         verified_process = Mock()
         verified_process.environ.return_value = {"ASM_INSTANCE_RUN_ID": "wrong-run"}
-        launch_signal_guard = Mock(return_value=False)
-
         with (
             patch.object(start_server_module.subprocess, "Popen", return_value=fake_process),
             patch.object(start_server_module, "capture_process_identity", return_value=identity),
@@ -412,7 +409,6 @@ class ProcessIdentityTests(unittest.TestCase):
                     "invented-start-file",
                     "invented-log-file",
                     run_id="run-23",
-                    launch_signal_guard=launch_signal_guard,
                 )
 
         self.assertEqual(
@@ -420,7 +416,6 @@ class ProcessIdentityTests(unittest.TestCase):
             "PostLaunchMayBeLiveError",
         )
         self.assertEqual(raised.exception.launch_identity, identity)
-        launch_signal_guard.assert_not_called()
         fake_process.terminate.assert_not_called()
         fake_process.wait.assert_not_called()
 
@@ -433,8 +428,6 @@ class ProcessIdentityTests(unittest.TestCase):
         verified_process.environ.return_value = {"ASM_INSTANCE_RUN_ID": "run-23"}
         output_thread = Mock()
         output_thread.start.side_effect = RuntimeError("invented reader startup failure")
-        launch_signal_guard = Mock(return_value=True)
-
         def capture_anchored_process(process, run_id):
             process._asm_process_identity = identity
             return identity
@@ -455,7 +448,6 @@ class ProcessIdentityTests(unittest.TestCase):
                     "invented-start-file",
                     "invented-log-file",
                     run_id="run-23",
-                    launch_signal_guard=launch_signal_guard,
                 )
 
         self.assertEqual(
@@ -465,7 +457,6 @@ class ProcessIdentityTests(unittest.TestCase):
         self.assertEqual(raised.exception.launch_identity, identity)
         fake_process.terminate.assert_not_called()
         fake_process.kill.assert_not_called()
-        launch_signal_guard.assert_not_called()
 
     def test_start_server_without_marker_keeps_legacy_popen_environment_behavior(self) -> None:
         fake_process = object()

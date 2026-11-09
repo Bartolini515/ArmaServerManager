@@ -17,7 +17,11 @@ from rest_framework.test import APIClient
 
 from main.instance_tasks import create_instance_task_binding
 from main.models import InstanceLifecycleLock, InstanceTask, Instances, Ports
-from main.serverhandling.process_identity import ProcessIdentity, UnverifiedProcessError
+from main.serverhandling.process_identity import (
+    ProcessIdentity,
+    UnverifiedProcessError,
+    get_verified_process as verify_process_identity,
+)
 from main.tasks import (
     check_all_servers_status_task,
     instance_timeout_task,
@@ -220,9 +224,13 @@ class InstanceLifecycleTests(TransactionTestCase):
         binding, task, kwargs = dispatched[0]
         self.assertEqual(task, start_server_task)
         self.assertEqual(binding.kind, InstanceTask.Kind.START)
-        self.assertEqual(kwargs["instance_id"], instance.pk)
-        self.assertEqual(kwargs["arma3_dir"], str(self.arma_root))
-        self.assertEqual(kwargs["run_id"], str(Instances.objects.get(pk=instance.pk).run_id))
+        self.assertEqual(
+            kwargs,
+            {
+                "instance_id": instance.pk,
+                "run_id": str(Instances.objects.get(pk=instance.pk).run_id),
+            },
+        )
 
         instance.refresh_from_db()
         self.assertEqual(instance.lifecycle_state, "starting")
@@ -792,7 +800,6 @@ class InstanceLifecycleTests(TransactionTestCase):
                 "/isolated/arma3/start-lifecycle.sh",
                 "/isolated/logs/server.log",
                 run_id="owned-run",
-                launch_signal_guard=MagicMock(return_value=True),
             )
 
         self.assertIs(result, fake_process)
@@ -1108,8 +1115,8 @@ class InstanceLifecycleTests(TransactionTestCase):
         self.assertEqual(instance.run_id, run_id)
         self.assertTrue(is_instance_lifecycle_busy(instance))
 
-    def test_popen_launch_guard_rechecks_birth_marker_and_attempt_before_signaling(self):
-        from main.tasks import _signal_if_current_start_launch
+    def test_start_attempt_guard_rechecks_birth_marker_before_signaling(self):
+        from main.tasks import _start_attempt_signal_guard
 
         marker_cases = ("wrong", "unreadable", "missing-identity")
         for offset, marker_case in enumerate(marker_cases):
@@ -1126,11 +1133,8 @@ class InstanceLifecycleTests(TransactionTestCase):
                 instance.save()
 
                 identity = ProcessIdentity(pid=12500 + offset, created_at=300.5 + offset)
-                child = MagicMock()
-                child.pid = identity.pid
-                child._asm_process_identity = identity
-                child.poll.return_value = None
                 verified_process = MagicMock()
+                verified_process.pid = identity.pid
                 verified_process.create_time.return_value = identity.created_at
                 if marker_case == "wrong":
                     verified_process.environ.return_value = {
@@ -1140,24 +1144,36 @@ class InstanceLifecycleTests(TransactionTestCase):
                     verified_process.environ.side_effect = PermissionError(
                         "injected marker access failure"
                     )
-                else:
-                    child._asm_process_identity = None
+                signal_guard = _start_attempt_signal_guard(
+                    instance.pk,
+                    str(run_id),
+                    binding.task_id,
+                )
 
-                with patch(
-                    "main.serverhandling.process_identity.psutil.Process",
-                    return_value=verified_process,
-                ):
-                    result = _signal_if_current_start_launch(
-                        instance.pk,
-                        str(run_id),
-                        binding.task_id,
-                        "terminate",
-                        child,
+                if marker_case == "missing-identity":
+                    with patch("main.tasks.get_verified_process", return_value=None):
+                        result = signal_guard(identity, "terminate")
+                else:
+                    with patch(
+                        "main.serverhandling.process_identity.psutil.Process",
+                        return_value=verified_process,
+                    ) as process_factory:
+                        try:
+                            result = signal_guard(identity, "terminate")
+                        except UnverifiedProcessError:
+                            result = False
+                    self.assertTrue(process_factory.call_args_list)
+                    self.assertTrue(
+                        all(
+                            call.args == (identity.pid,)
+                            for call in process_factory.call_args_list
+                        )
                     )
+                    verified_process.create_time.assert_called()
 
                 self.assertFalse(result)
-                child.terminate.assert_not_called()
-                child.kill.assert_not_called()
+                verified_process.terminate.assert_not_called()
+                verified_process.kill.assert_not_called()
                 instance.refresh_from_db()
                 self.assertEqual(instance.lifecycle_state, "unknown")
                 self.assertTrue(instance.is_running)
@@ -1864,8 +1880,8 @@ class InstanceLifecycleTests(TransactionTestCase):
         process.terminate.assert_called_once_with()
         process.kill.assert_called_once_with()
 
-    def test_popen_cleanup_signal_is_fenced_when_stop_takes_ownership(self):
-        from main.tasks import _signal_if_current_start_launch
+    def test_start_attempt_signal_guard_is_fenced_when_stop_takes_ownership(self):
+        from main.tasks import _start_attempt_signal_guard
 
         instance = self.make_instance(state="starting")
         run_id = uuid4()
@@ -1876,57 +1892,45 @@ class InstanceLifecycleTests(TransactionTestCase):
         instance.lifecycle_task_id = start_binding.task_id
         instance.start_claimed_at = start_binding.claimed_at
         instance.save()
-        first_child = MagicMock()
         launch_identity = ProcessIdentity(pid=12345, created_at=100.5)
-        first_child.pid = launch_identity.pid
-        first_child._asm_process_identity = launch_identity
-        first_child.poll.return_value = None
         verified_process = MagicMock()
+        verified_process.pid = launch_identity.pid
         verified_process.create_time.return_value = launch_identity.created_at
         verified_process.environ.return_value = {
             "ASM_INSTANCE_RUN_ID": str(run_id)
         }
+        signal_guard = _start_attempt_signal_guard(
+            instance.pk,
+            str(run_id),
+            start_binding.task_id,
+        )
 
         with patch(
             "main.serverhandling.process_identity.psutil.Process",
             return_value=verified_process,
-        ):
-            self.assertTrue(
-                _signal_if_current_start_launch(
-                    instance.pk,
-                    str(run_id),
-                    start_binding.task_id,
-                    "terminate",
-                    first_child,
-                )
-            )
-        first_child.terminate.assert_called_once_with()
+        ) as process_factory:
+            self.assertTrue(signal_guard(launch_identity, "terminate"))
+        process_factory.assert_called_once_with(launch_identity.pid)
+        verified_process.create_time.assert_called_once_with()
+        verified_process.terminate.assert_called_once_with()
+        verified_process.kill.assert_not_called()
 
         stop_binding = create_instance_task_binding(instance, InstanceTask.Kind.STOP)
         instance.lifecycle_state = "stopping"
         instance.lifecycle_task_id = stop_binding.task_id
         instance.save()
-        stale_child = MagicMock()
-        stale_child.pid = launch_identity.pid
-        stale_child._asm_process_identity = launch_identity
-        stale_child.poll.return_value = None
-
         with (
             patch(
                 "main.serverhandling.process_identity.psutil.Process",
                 return_value=verified_process,
-            ),
+            ) as stale_process_factory,
             self.assertRaises(Ignore),
         ):
-            _signal_if_current_start_launch(
-                instance.pk,
-                str(run_id),
-                start_binding.task_id,
-                "terminate",
-                stale_child,
-            )
+            signal_guard(launch_identity, "terminate")
 
-        stale_child.terminate.assert_not_called()
+        stale_process_factory.assert_not_called()
+        verified_process.terminate.assert_called_once_with()
+        verified_process.kill.assert_not_called()
 
     def test_retired_binding_is_busy_excluded_rejected_and_reported_revoked(self):
         from main.instance_lifecycle import is_instance_lifecycle_busy
@@ -2263,6 +2267,166 @@ class InstanceLifecycleTests(TransactionTestCase):
         self.assertTrue(instance.is_running)
         self.assertEqual(instance.pid, 12345)
 
+    def test_stop_keeps_unknown_and_sends_no_signal_when_direct_executable_changes(self):
+        instance = self.make_instance(state="stopping")
+        binding = create_instance_task_binding(instance, InstanceTask.Kind.STOP)
+        run_id = uuid4()
+        expected_identity = ProcessIdentity(pid=12345, created_at=100.5)
+        instance.run_id = run_id
+        instance.lifecycle_task_id = binding.task_id
+        instance.pid = expected_identity.pid
+        instance.process_created_at = expected_identity.created_at
+        instance.process_executable = "/isolated/arma3/arma3server_x64"
+        instance.is_running = True
+        instance.save()
+        fake_process = MagicMock()
+        fake_process.pid = 12345
+        fake_process.create_time.return_value = 100.5
+        fake_process.environ.return_value = {"ASM_INSTANCE_RUN_ID": str(run_id)}
+        fake_process.exe.return_value = "/isolated/other/changed-executable"
+        fake_process.children.return_value = []
+
+        with (
+            patch(
+                "main.tasks.get_verified_process",
+                wraps=verify_process_identity,
+            ) as verify_identity,
+            patch(
+                "main.serverhandling.process_identity.psutil.Process",
+                return_value=fake_process,
+            ) as process_factory,
+            patch("main.tasks.find_udp_processes", return_value=[]),
+            patch("main.tasks.time.sleep"),
+            bound_task_request(stop_server_task, binding.task_id),
+        ):
+            with self.assertRaises(UnverifiedProcessError):
+                stop_server_task.run(instance_id=instance.pk, run_id=str(run_id))
+
+        fake_process.terminate.assert_not_called()
+        fake_process.kill.assert_not_called()
+        self.assertTrue(process_factory.call_args_list)
+        self.assertTrue(
+            all(call.args == (12345,) for call in process_factory.call_args_list)
+        )
+        fake_process.create_time.assert_called()
+        self.assertTrue(verify_identity.call_args_list)
+        self.assertTrue(
+            all(
+                call.args == (expected_identity,)
+                for call in verify_identity.call_args_list
+            )
+        )
+        instance.refresh_from_db()
+        self.assertEqual(instance.lifecycle_state, Instances.LifecycleState.UNKNOWN)
+        self.assertTrue(instance.is_running)
+        self.assertEqual(instance.pid, 12345)
+
+    def test_start_compensation_keeps_unknown_and_sends_no_signal_when_executable_changes(self):
+        from main.tasks import _compensate_started_process
+
+        instance = self.make_instance(state=Instances.LifecycleState.RUNNING)
+        binding = create_instance_task_binding(instance, InstanceTask.Kind.START)
+        binding.claimed_at = timezone.now()
+        binding.save(update_fields=["claimed_at"])
+        run_id = uuid4()
+        expected_identity = ProcessIdentity(pid=12345, created_at=100.5)
+        instance.run_id = run_id
+        instance.lifecycle_task_id = binding.task_id
+        instance.start_claimed_at = binding.claimed_at
+        instance.pid = expected_identity.pid
+        instance.process_created_at = expected_identity.created_at
+        instance.process_executable = "/isolated/arma3/arma3server_x64"
+        instance.is_running = True
+        instance.save()
+        fake_process = MagicMock()
+        fake_process.pid = 12345
+        fake_process.create_time.return_value = 100.5
+        fake_process.environ.return_value = {"ASM_INSTANCE_RUN_ID": str(run_id)}
+        fake_process.exe.return_value = "/isolated/other/changed-executable"
+        fake_process.children.return_value = []
+        signal_guard = MagicMock(return_value=True)
+
+        with (
+            patch(
+                "main.tasks.get_verified_process",
+                wraps=verify_process_identity,
+            ) as verify_identity,
+            patch(
+                "main.serverhandling.process_identity.psutil.Process",
+                return_value=fake_process,
+            ) as process_factory,
+            patch("main.tasks.find_udp_processes", return_value=[]),
+            patch("main.tasks.time.sleep"),
+        ):
+            with self.assertRaises(UnverifiedProcessError):
+                _compensate_started_process(
+                    instance.pk,
+                    str(run_id),
+                    binding.task_id,
+                    signal_guard=signal_guard,
+                )
+
+        signal_guard.assert_not_called()
+        fake_process.terminate.assert_not_called()
+        fake_process.kill.assert_not_called()
+        self.assertTrue(process_factory.call_args_list)
+        self.assertTrue(
+            all(call.args == (12345,) for call in process_factory.call_args_list)
+        )
+        fake_process.create_time.assert_called()
+        self.assertTrue(verify_identity.call_args_list)
+        self.assertTrue(
+            all(
+                call.args == (expected_identity,)
+                for call in verify_identity.call_args_list
+            )
+        )
+        instance.refresh_from_db()
+        self.assertEqual(instance.lifecycle_state, Instances.LifecycleState.UNKNOWN)
+        self.assertTrue(instance.is_running)
+        self.assertEqual(instance.pid, 12345)
+
+    def test_reconciliation_keeps_unknown_when_direct_executable_changes(self):
+        instance = self.make_instance(state=Instances.LifecycleState.RUNNING)
+        run_id = uuid4()
+        expected_identity = ProcessIdentity(pid=12345, created_at=100.5)
+        instance.run_id = run_id
+        instance.pid = expected_identity.pid
+        instance.process_created_at = expected_identity.created_at
+        instance.process_executable = "/isolated/arma3/arma3server_x64"
+        instance.is_running = True
+        instance.save()
+        fake_process = MagicMock()
+        fake_process.pid = 12345
+        fake_process.create_time.return_value = 100.5
+        fake_process.environ.return_value = {"ASM_INSTANCE_RUN_ID": str(run_id)}
+        fake_process.exe.return_value = "/isolated/other/changed-executable"
+
+        with (
+            patch(
+                "main.tasks.get_verified_process",
+                wraps=verify_process_identity,
+            ) as verify_identity,
+            patch(
+                "main.serverhandling.process_identity.psutil.Process",
+                return_value=fake_process,
+            ) as process_factory,
+            patch("main.tasks.find_udp_processes", return_value=[]) as udp,
+        ):
+            with self.assertRaises(UnverifiedProcessError):
+                check_all_servers_status_task.run()
+
+        udp.assert_not_called()
+        fake_process.terminate.assert_not_called()
+        fake_process.kill.assert_not_called()
+        verify_identity.assert_called_once_with(expected_identity)
+        process_factory.assert_called_once_with(12345)
+        fake_process.create_time.assert_called_once_with()
+        instance.refresh_from_db()
+        self.assertEqual(instance.lifecycle_state, Instances.LifecycleState.UNKNOWN)
+        self.assertTrue(instance.is_running)
+        self.assertEqual(instance.pid, 12345)
+
     def test_verified_stop_confirms_identity_exit_before_clearing_lifecycle(self):
         instance = self.make_instance(state="stopping")
         binding = create_instance_task_binding(instance, "stop")
@@ -2279,6 +2443,7 @@ class InstanceLifecycleTests(TransactionTestCase):
         process_identity = ProcessIdentity(pid=12345, created_at=100.5)
         fake_process = MagicMock()
         fake_process.environ.return_value = {"ASM_INSTANCE_RUN_ID": str(run_id)}
+        fake_process.exe.return_value = "/isolated/arma3/arma3server_x64"
         fake_process.children.return_value = []
         live = {"value": True}
 
@@ -2406,12 +2571,14 @@ class InstanceLifecycleTests(TransactionTestCase):
         ):
             result = start_server_task.run(
                 instance_id=instance.pk,
-                arma3_dir="/isolated/arma3",
+                arma3_dir="/untrusted/legacy-start-queue-path",
                 run_id=str(run_id),
             )
 
         self.assertIn("uruchomiony", result["status"])
         start.assert_called_once()
+        self.assertEqual(start.call_args.args[0], "/isolated/arma3")
+        self.assertNotIn("/untrusted/legacy-start-queue-path", repr(start.call_args))
         self.assertEqual(start.call_args.kwargs["run_id"], str(run_id))
         schedule.assert_called_once()
         instance.refresh_from_db()
@@ -2454,7 +2621,6 @@ class InstanceLifecycleTests(TransactionTestCase):
         ):
             start_server_task.run(
                 instance_id=instance.pk,
-                arma3_dir="/isolated/arma3",
                 run_id=str(run_id),
             )
 

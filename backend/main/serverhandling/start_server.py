@@ -66,7 +66,6 @@ def start_server(
     log_file_path: str,
     *,
     run_id: str | None = None,
-    launch_signal_guard=None,
 ) -> subprocess.Popen:
     """
     Start an Arma 3 server instance and log its output.
@@ -92,8 +91,6 @@ def start_server(
     if run_id is not None:
         if not isinstance(run_id, str) or not run_id.strip():
             raise ValueError("run_id must be non-empty")
-        if not callable(launch_signal_guard):
-            raise ValueError("launch_signal_guard is required for managed starts")
         child_environment = os.environ.copy()
         child_environment["ASM_INSTANCE_RUN_ID"] = run_id
         popen_options["env"] = child_environment

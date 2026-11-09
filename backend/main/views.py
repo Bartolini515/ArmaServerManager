@@ -662,7 +662,7 @@ class InstancesViewset(viewsets.ModelViewSet):
                         "is_running",
                     ]
                 )
-                queued = (binding, instance.pk, str(run_id), arma3_dir)
+                queued = (binding, instance.pk, str(run_id))
             if start_log_journal is not None:
                 cleanup_pending = start_log_journal.finalize()
         except APIException as error:
@@ -705,14 +705,13 @@ class InstancesViewset(viewsets.ModelViewSet):
                 status=500,
             )
 
-        binding, instance_id, run_id, arma3_dir = queued
+        binding, instance_id, run_id = queued
         try:
             task_id = dispatch_instance_task(
                 binding,
                 start_server_task,
                 kwargs={
                     "instance_id": instance_id,
-                    "arma3_dir": arma3_dir,
                     "run_id": run_id,
                 },
             )
