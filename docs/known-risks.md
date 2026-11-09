@@ -20,6 +20,8 @@ Only single-model deletion routed through the managed service carries the intend
 
 The worker combines an owner-token renewable lease with durable database claims and checks both before shared writes. The lease alone is not a durable task claim or fence. The download view reuses same-instance work and resolves lifecycle/global conflicts before new-admission config/preset/disk preflight. It records static attention when an unfinished download disagrees with terminal Celery state, and late delivery/claim/readiness paths honor that fence. Preparation failures before secret-redactor initialization use a fixed diagnostic and do not format the original exception.
 
+Post-download verification checks that each expected mod directory exists; it does not verify the completeness or integrity of its contents.
+
 The supported coordination boundary is one ASM installation using one database and Redis. External writers, additional databases, direct workspace edits, and other Redis clients do not participate. The worker resolves numeric DNS before lease acquisition, outside the bounded Redis I/O guarantee. Its client caps the pool at four connections with connect/socket timeouts at or below one second. Bounded fake/client tests do not establish live Redis/TLS behavior or bound operating-system DNS.
 
 A static nonterminal attention state requires authorized operator review. Never treat task age, lease expiry, Celery backend state, or a missing cache key alone as proof that work stopped.

@@ -448,14 +448,12 @@ def run_download_job(
                             )
 
                     _assert_current_claim(task_id, instance_id, lease)
-                    installed_after, missing_after = check_installed(
+                    _paths_after, missing_after = check_installed(
                         wids=workshop_ids,
                         mods_dir=paths["mods_directory"],
                         log_callback=safe_operations_log,
                     )
-                    expected = {str(workshop_id) for workshop_id in workshop_ids}
-                    verified = {str(workshop_id) for workshop_id in installed_after}
-                    if missing_after or not expected.issubset(verified):
+                    if missing_after:
                         raise SteamCommandError(
                             "Nie udało się zweryfikować wszystkich wymaganych modów.",
                             diagnostic="Steam workshop content verification failed",

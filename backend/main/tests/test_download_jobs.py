@@ -908,6 +908,40 @@ class DownloadWorkerTests(TransactionTestCase):
         self.assertTrue(owner_instance.is_ready)
         self.assertTrue(other_instance.is_ready)
 
+    def test_worker_accepts_mod_directory_created_by_download(self):
+        from main import download_jobs
+
+        instance = self.make_instance()
+        binding, _reused = reserve_download(instance.pk)
+        snapshot = self._snapshot()
+        lease = _FakeLease()
+
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            mods_dir = Path(temporary_dir)
+            snapshot["paths"]["mods_directory"] = str(mods_dir)
+
+            def download(**kwargs):
+                self.assertEqual(kwargs["mods_to_download"], ["123456"])
+                (mods_dir / "123456").mkdir()
+
+            with (
+                patch.object(download_jobs.config, "snapshot", return_value=snapshot),
+                patch.object(download_jobs, "_validate_current_preset", return_value="/isolated/current.html"),
+                patch.object(download_jobs, "_new_download_lease", return_value=lease),
+                patch.object(download_jobs, "operation_loggers", side_effect=_fake_loggers),
+                patch.object(download_jobs, "preset_parser", return_value=["123456"]),
+                patch.object(download_jobs, "download_mods", side_effect=download) as downloader,
+                bound_task_request(download_mods_task, binding.task_id),
+            ):
+                result = download_mods_task.run(instance_id=instance.pk)
+
+        self.assertEqual(result, {"status": "Pobieranie zakończone pomyślnie!"})
+        downloader.assert_called_once()
+        instance.refresh_from_db()
+        binding.refresh_from_db()
+        self.assertTrue(instance.is_ready)
+        self.assertIsNotNone(binding.finished_at)
+
     def test_worker_uses_one_locked_snapshot_and_publishes_only_verified_content(self):
         from main import download_jobs
 
@@ -945,7 +979,7 @@ class DownloadWorkerTests(TransactionTestCase):
             patch.object(
                 download_jobs,
                 "check_installed",
-                side_effect=[([], ["123456"]), (["123456"], [])],
+                side_effect=[(["/isolated/mods/123456"], ["123456"]), (["/isolated/mods/123456"], [])],
             ) as verify_installed,
             patch.object(download_jobs, "download_mods", return_value=None) as downloader,
             patch.object(download_mods_task, "update_state") as update_state,
