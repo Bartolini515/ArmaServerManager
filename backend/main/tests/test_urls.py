@@ -13,5 +13,8 @@ class TestUrls(SimpleTestCase):
         self.assertEqual(resolve(url).func.cls, AccountViewset)
         
     def test_services_url_is_resolved(self):
-        url = reverse('services-list')
-        self.assertEqual(resolve(url).func.cls, ServicesViewset)
+        url = reverse('services-getSystemInfo')
+        resolved = resolve(url)
+        self.assertEqual(url, '/api/services/get_system_info/')
+        self.assertEqual(resolved.func.cls, ServicesViewset)
+        self.assertEqual(resolved.func.actions, {'get': 'getSystemInfo'})

@@ -3,13 +3,21 @@ from ..utils.config import config
 from ..utils.operation_logging import LogCallback
 
 
-def generate_server_config(username: str, password: str, arma_path: str, log_callback: LogCallback | None = None) -> str:
+def generate_server_config(
+    username: str,
+    password: str,
+    arma_path: str,
+    log_callback: LogCallback | None = None,
+    *,
+    output_path: str | None = None,
+) -> str:
     """Generates a server configuration file for the given username and password.
     Args:
         username (str): The username of the user.
         password (str): The password of the user.
         arma_path (str): The path to the Arma 3 server directory.
         log_callback (callable, optional): The logging callback function. Defaults to None.
+        output_path (str, optional): An alternate output path for staged generation.
 
     Returns:
         str: The path to the generated server configuration file.
@@ -80,14 +88,25 @@ def generate_server_config(username: str, password: str, arma_path: str, log_cal
             }};
         }};
     """
-    config_path = f"{arma_path}/server_{username}.cfg"
+    config_path = output_path if output_path is not None else f"{arma_path}/server_{username}.cfg"
     with open(config_path, 'w') as config_file:
         config_file.write(config_content)
     if log_callback:
         log_callback(f"Generated server config for {username} at {config_path}")
     return config_path
 
-def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_directory: str, arma_directory: str, log_callback: LogCallback | None = None, is_admin_instance: bool = False) -> str:
+def generate_sh_file(
+    name: str,
+    port: int,
+    username: str,
+    mod_paths: list,
+    mods_directory: str,
+    arma_directory: str,
+    log_callback: LogCallback | None = None,
+    is_admin_instance: bool = False,
+    *,
+    output_path: str | None = None,
+) -> str:
     """Generates a shell script to start the Arma 3 server.
     Args:
         name (str): The name of the server.
@@ -98,11 +117,12 @@ def generate_sh_file(name: str, port: int, username: str, mod_paths: list, mods_
         arma_directory (str): The directory where the Arma 3 server executable is located.
         log_callback (callable, optional): The logging callback function. Defaults to None.
         is_admin_instance (bool, optional): Whether the instance is an admin instance. Defaults to False.
+        output_path (str, optional): An alternate output path for staged generation.
 
     Returns:
         str: The path to the generated shell script.
     """
-    script_name = f"{arma_directory}/start{name}.sh"
+    script_name = output_path if output_path is not None else f"{arma_directory}/start{name}.sh"
 
     with open(script_name, 'w') as script_file:
         script_file.write("#!/bin/bash\n")

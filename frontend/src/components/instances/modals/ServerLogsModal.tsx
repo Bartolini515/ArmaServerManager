@@ -35,14 +35,24 @@ const style = {
 type Props = {
 	selectedInstanceId: number;
 	onClose: () => void;
+	canDeleteLogs: boolean;
+	onDeleteLogs: (instanceId: number) => Promise<boolean>;
 };
 
 export default function ServerLogsModal(props: Props) {
 	const { setAlert } = useAlert();
 	const [logs, setLogs] = useState("");
 	const logTextArea = useRef<HTMLTextAreaElement>(null);
+	const mountedRef = useRef(false);
 	// const [tailLines, setTailLines] = useState(1000);
 	const [loading, setLoading] = useState(true);
+
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+		};
+	}, []);
 
 	useEffect(() => {
 		if (props.selectedInstanceId !== null) {
@@ -86,16 +96,18 @@ export default function ServerLogsModal(props: Props) {
 			});
 	};
 
-	const DeleteLogs = (id: number) => {
-		AxiosInstance.delete(`instances/${id}/logs/delete/`)
-			.then((response) => {
-				setLogs("");
-				setAlert(response.data.message, "success");
-			})
-			.catch((error: unknown) => {
-				console.log(error);
-				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
-			});
+	const DeleteLogs = async (id: number) => {
+		if (!props.canDeleteLogs) {
+			return;
+		}
+		const deleted = await props.onDeleteLogs(id);
+		if (
+			deleted &&
+			mountedRef.current &&
+			props.selectedInstanceId === id
+		) {
+			setLogs("");
+		}
 	};
 
 	return (
@@ -193,7 +205,7 @@ export default function ServerLogsModal(props: Props) {
 							aria-label="delete log file"
 							component="label"
 							onClick={() => DeleteLogs(props.selectedInstanceId)}
-							disabled={!logs || logs.length === 0}
+							disabled={!props.canDeleteLogs || !logs || logs.length === 0}
 						>
 							<DeleteForeverIcon />
 						</Button>

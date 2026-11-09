@@ -31,7 +31,7 @@ export default function Login() {
 		},
 	});
 	const [showMessage, setShowMessage] = useState(false);
-	const { setIsAdmin, setUser } = useAuth();
+	const { setToken, setIsAdmin, setUser } = useAuth();
 	const { setAlert } = useAlert();
 	const { mode } = useCustomTheme();
 
@@ -42,12 +42,9 @@ export default function Login() {
 		})
 
 			.then((response) => {
-				localStorage.setItem("Token", response.data.token);
+				setToken(response.data.token);
 				setUser(response.data.user);
-
-				if (response.data.isAdmin) {
-					setIsAdmin(response.data.isAdmin);
-				}
+				setIsAdmin(response.data.isAdmin);
 
 				if (response.data.user.last_login === null) {
 					navigate(`/change_password`);

@@ -26,7 +26,23 @@ Run the safe repository check:
 pipenv run check
 ```
 
-It runs dependency, documentation, backend syntax, frontend lint/build, and diff-whitespace checks. It explicitly skips Django tests because an isolated test database is not configured. Report that omission instead of implying full application-test coverage.
+It runs dependency, documentation, backend syntax, frontend lint/build, and diff-whitespace checks. It omits Django tests by default; report that omission instead of implying full application-test coverage.
+
+Run relevant backend behavior tests separately from the repository root:
+
+POSIX shells:
+
+```sh
+PIPENV_DONT_LOAD_ENV=1 pipenv run python scripts/test_backend.py
+```
+
+PowerShell:
+
+```powershell
+$env:PIPENV_DONT_LOAD_ENV = '1'; pipenv run python scripts/test_backend.py
+```
+
+`PIPENV_DONT_LOAD_ENV=1` prevents Pipenv from loading `.env`. The isolated runner uses an in-memory SQLite database and disposable configuration and filesystem paths under a temporary directory. Its guards reject access to protected repository runtime data and block external network, subprocess, and host process operations. Run backend behavior tests through this script, not through `manage.py test` or production settings.
 
 A change is complete only when its relevant checks were actually run, the affected documentation is updated, no secrets or personal paths entered the diff, and the final report names changed files, checks, limitations, and any required follow-up.
 

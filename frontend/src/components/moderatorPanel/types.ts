@@ -4,14 +4,29 @@ export interface UserModeratorFormData {
 }
 
 export interface ConfigModeratorFormData {
-	steamcmd?: string;
-	arma3?: string;
-	mods_directory?: string;
-	logs_directory?: string;
-	download_directory?: string;
-	username?: string;
-	password?: string;
-	shared_secret?: string;
+	steamcmd: string;
+	arma3: string;
+	mods_directory: string;
+	logs_directory: string;
+	download_directory: string;
+	username: string;
+	password: string;
+	shared_secret: string;
+}
+
+export interface ConfigModeratorPayload {
+	paths: {
+		steamcmd: string;
+		arma3: string;
+		mods_directory: string;
+		logs_directory: string;
+		download_directory: string;
+	};
+	steam_auth: {
+		username: string;
+		password?: string;
+		shared_secret?: string;
+	};
 }
 
 export interface ModeratorFormOption {
@@ -43,5 +58,5 @@ export interface ConfigModeratorOption {
 			title: string | null;
 		};
 	};
-	payload: (data: ConfigModeratorFormData) => Record<string, unknown>;
+	payload: (data: ConfigModeratorFormData) => ConfigModeratorPayload;
 }

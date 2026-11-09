@@ -116,6 +116,20 @@ class ConfigSerializer(serializers.Serializer):
 class InstanceSerializer(serializers.ModelSerializer):
     user = ProfileSerializer(read_only=True)
     port = serializers.StringRelatedField()
+    active_tasks = serializers.SerializerMethodField()
+
+    def get_active_tasks(self, instance):
+        """Return the newest unfinished task ID for each operation kind."""
+        active_tasks = {}
+        bindings = instance.tasks.filter(
+            finished_at__isnull=True,
+            superseded_at__isnull=True,
+        ).order_by(
+            "kind", "-created_at", "task_id"
+        )
+        for binding in bindings:
+            active_tasks.setdefault(binding.kind, str(binding.task_id))
+        return active_tasks
     
     def validate_name(self, value):
         if len(value) < 3:
@@ -139,7 +153,22 @@ class InstanceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Instances
         fields = ('id', 'name', 'user', 'preset', 'log_file', 'start_file_path', 'port', 
-                  'pid', 'is_ready', 'is_running', 'is_admin_instance', 'created_at')
+                  'pid', 'is_ready', 'is_running', 'is_admin_instance', 'created_at',
+                  'lifecycle_state', 'shutdown_at', 'active_tasks')
+        read_only_fields = (
+            'id',
+            'user',
+            'log_file',
+            'start_file_path',
+            'port',
+            'pid',
+            'is_ready',
+            'is_running',
+            'is_admin_instance',
+            'created_at',
+            'lifecycle_state',
+            'shutdown_at',
+        )
         
 # MissionsSerializers
 class MissionSerializer(serializers.ModelSerializer):
