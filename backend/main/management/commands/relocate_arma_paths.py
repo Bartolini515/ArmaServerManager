@@ -17,14 +17,23 @@ def _directory(value):
     return Path(os.path.abspath(path))
 
 
-def _regular_file(path):
+def _real_directory(path):
     current = Path(path.anchor)
     try:
-        for component in path.parts[1:-1]:
+        for component in path.parts[1:]:
             current /= component
             info = current.lstat()
             if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
                 return False
+        return True
+    except OSError:
+        return False
+
+
+def _regular_file(path):
+    if not _real_directory(path.parent):
+        return False
+    try:
         info = path.lstat()
         return stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode)
     except OSError:
@@ -44,8 +53,10 @@ class Command(BaseCommand):
         new = _directory(options["new_root"])
         if old == new or old in new.parents or new in old.parents:
             raise CommandError("Roots must be distinct and non-overlapping.")
+        if not _real_directory(new):
+            raise CommandError("The new server directory is missing or unsafe.")
         if not _regular_file(new / "arma3server_x64"):
-            raise CommandError("The new server executable is missing or unsafe.")
+            self.stderr.write("Warning: arma3server_x64 is missing or unsafe; server start will fail.")
 
         with lifecycle_transaction():
             profiles = list(Profile.objects.select_for_update().order_by("pk"))

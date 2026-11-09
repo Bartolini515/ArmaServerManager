@@ -1,6 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+from io import StringIO
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -70,12 +71,13 @@ class RelocatePathsTests(TransactionTestCase):
         self.instance.refresh_from_db()
         self.assertEqual(self.instance.start_file_path, str(self.old / "startinvented-instance.sh"))
 
-    def test_missing_server_executable_is_rejected(self):
+    def test_missing_server_executable_warns_without_blocking_path_relocation(self):
         (self.new / "arma3server_x64").unlink()
-        with self.assertRaises(CommandError):
-            call_command("relocate_arma_paths", str(self.old), str(self.new), apply=True)
+        stderr = StringIO()
+        call_command("relocate_arma_paths", str(self.old), str(self.new), apply=True, stderr=stderr)
         self.instance.refresh_from_db()
-        self.assertEqual(self.instance.start_file_path, str(self.old / "startinvented-instance.sh"))
+        self.assertEqual(self.instance.start_file_path, str(self.new / "startinvented-instance.sh"))
+        self.assertIn("arma3server_x64", stderr.getvalue())
 
     def test_database_failure_rolls_back_earlier_instance_updates(self):
         with patch.object(Profile, "save", side_effect=DatabaseError("invented failure")):
