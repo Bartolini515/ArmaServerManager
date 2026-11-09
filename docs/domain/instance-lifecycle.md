@@ -1,56 +1,54 @@
 # Instance lifecycle
 
-An instance represents one Arma 3 server definition and its host-side files. The browser uses the REST endpoints in [the API contract](../api.md); the server-side lifecycle crosses models, generated files, Celery, Redis, SteamCMD, and host processes.
+This lifecycle contract reflects the accepted source at commit 9da951f and guarded regression evidence (2026-11-09).
 
-## Create
+An instance is a logical Arma 3 server plus its managed files, reserved port, asynchronous tasks, and a verified host-process run. Database flags alone do not prove that a host process is alive or safe to signal.
 
-1. An authenticated user submits a name and HTML preset.
-2. `InstanceSerializer` validates the safe name and preset filename.
-3. The backend locks and selects the first available `Ports` row.
-4. The instance is saved and the port is marked unavailable in one database transaction.
-5. The preset parser extracts Workshop IDs.
-6. A per-user server configuration is generated when needed, followed by an instance start script.
-7. The generated path is stored on the instance and the creation operation log is written immediately through the standard-library logging context.
+## State and ownership
 
-Non-staff users may create at most five instances. The instance is not ready until its required mods have been downloaded.
+The public lifecycle states are `stopped`, `starting`, `running`, `stopping`, and `unknown`. The state and per-instance `shutdown_at` are read-only API fields. Internal run IDs, process birth/executable identity and task-binding paths are not public.
+
+Task IDs are strings. A database `InstanceTask` binding is written before dispatch and ties each start, stop, or download task to one instance. Workers claim once. The task-status API checks that binding against the caller's ownership or staff access.
+
+## Create and file publication
+
+Creation, preset replacement, first start, and single-object deletion use the accepted managed-file service and shared lifecycle transaction. Create validates before reservation, stages preset/config/script, and publishes managed files with instance/profile/port rows. Admin preset replacement requires the file before side effects; old metadata/files are preserved only if precommit compensation succeeds and verifies restoration. Uncertain compensation may leave unresolved public destinations or private evidence for operator review. First-start log bytes are staged by `staged_first_instance_log`; the database `on_commit` callback marks that journal committed. After commit, private cleanup failure is `cleanup_pending`, with no rollback over committed metadata. The read-only `preflight_managed_root_layout(config_snapshot)` runs before operation logging for create, preset replacement, and first start using the same snapshot as the operation; its public-root roster includes `Missions.mission_file`.
+
+Ordinary users are limited to five instances. Staff can operate all instances. User deletion is expected to preflight every owned instance and reject busy or uncertain work; it does not automatically stop a server.
 
 ## Download mods
 
-`download_mods` enqueues `download_mods_task`. The task:
+The HTTP view authorizes the instance, then `reserve_download(instance_id)` checks same-instance reuse and lifecycle/global conflicts under the lifecycle mutex before invoking preflight for new admission. Reuse returns the existing string task ID with HTTP 202 and does not preflight or redispatch. A non-stopped instance or conflicting operation/download returns a static HTTP 409. New work checks the administrative superuser where required, one config snapshot, the preset and mods-directory setting, and at least 20 GiB free disk space before it creates a binding; preflight failure leaves no binding. A committed new binding is dispatched after the transaction with only `instance_id` and returns HTTP 202.
 
-- prevents duplicate active downloads through a cache key;
-- extracts Workshop IDs and filters already-installed mods;
-- invokes SteamCMD for missing mods;
-- reports `PROGRESS` status to the frontend;
-- normalizes addon directory casing, moves content from a temporary ghost folder, and cleans it;
-- marks `is_ready=True` only after success;
-- writes separate operation/download logs through one user-scoped logging context, records handled failures with a traceback, and clears its cache key on completion or failure.
+All downloads share SteamCMD cache/assets, so a new admission reserves one global unfinished-download slot. Same-instance requests reuse the existing task ID; another unfinished global download returns static HTTP 409. A healthy unclaimed, non-attention legacy DOWNLOAD does not alone block worker claim. A claimed or attention-required unfinished download does fence cross-instance claim/current-claim/readiness paths. No task age, TTL expiry, backend result, or missing cache key reclaims a reservation.
 
-The task requires configured Steam credentials and host paths. It must not run in repository-only checks.
+The worker takes one coherent configuration snapshot, claims the durable task binding once, and clears readiness in the claim transaction. It checks the current claim and renewable owner-token lease before every shared write/publication, and verifies required Workshop content before setting readiness true. Each job uses a unique worker-owned workspace. Cancellation is checked through SteamCMD output handling, retry/rate-limit waits, shared writes, and ghost-folder publication. The lease heartbeat continues during the 600-second rate-limit wait and 7,200-second SteamCMD execution window. The callback gate closes **admission** only: a callback admitted before cancellation can be suppressed or complete later; there is no promise about when its first physical instruction runs. Two daemon reader threads are used per cancellable supervisor. Cancellation adds no callback-monitor or cleanup thread and no callback queue; the lease uses its bounded heartbeat thread. If process cleanup or reader quiescence is uncertain, the worker retains the workspace and binding as unfinished attention. It closes no pipe while a reader may still be active. A filesystem-only postcommit cleanup-pending result is separate and does not itself mean process uncertainty.
+
+A persisted attention row returns the static HTTP 200 `REQUIRES_ATTENTION` response before Celery backend access. A terminal backend state (`SUCCESS`, `FAILURE`, or `REVOKED`) on any unfinished download is treated as unverified worker state and persisted as attention under the lifecycle coordinator; completion or supersession reread wins. A later queued delivery is rejected before claim/readiness mutation. Global attention fences block other worker claims/current-claim/readiness checks. A blocked record/handler can remain alive until it unwinds or the process restarts. The opted-in operation logger seals new handler admission and defers only an actively used handler's close to that record's return; it adds no monitor/cleanup thread. Normal logger teardown remains synchronous. Filesystem-only postcommit cleanup pending is separate from process/reader uncertainty.
+
+The worker resolves numeric DNS before lease acquisition; that OS DNS work is outside the bounded lease I/O. The Redis client uses a maximum of four connections and connect/socket timeouts no longer than one second. One ASM database/Redis installation is the supported coordination boundary.
 
 ## Start
 
-Before enqueueing `start_server_task`, the API checks that the instance is not already running, that required mods are installed, and that its generated start script exists. It creates an initial log file when needed. A non-administrative user cannot have more than one of their instances running, and a global limit of five running non-administrative instances is enforced for non-staff users.
+The API validates that the instance is stopped, ready, and has required installed mods plus valid preset/start/log inputs. One lifecycle mutex serializes admission. Starting reservations count toward owner/global limits. A duplicate start while the current reservation is active returns the existing task ID rather than enqueuing a second run.
 
-The task verifies the recorded PID is not already alive, launches the generated script from the Arma directory, stores the child PID, sets `is_running=True`, and streams output to the log. A temporary instance receives an `instance_timeout_task` scheduled one hour later; a new start revokes the previous timeout task ID stored in cache.
+The start worker claims the bound task and launches with a per-run UUID marker. During bounded startup identity resolution, it accepts the Popen root when its PID/birth identity and run marker are valid and its executable matches the persisted expected Arma executable, then rechecks that identity. If the Popen root is a shell or otherwise has a different executable, the worker examines its descendants and accepts only one candidate whose PID/birth identity, run marker, executable, and verified ancestry match; it rechecks the selected candidate and root before returning it. No unique verified match by the deadline leaves lifecycle state uncertain. This startup descendant selection is distinct from stop-time descendant signaling, described below. The persisted expected executable is checked for the direct/discovered root during later stop, compensation, and reconciliation. Failure before process creation can compensate the reservation; failure after launch may leave a live process and requires verified cleanup before reset.
 
 ## Stop and timeout
 
-`stop_server_task` finds the recorded PID and UDP-bound processes for the instance port. It terminates child processes first, waits up to 30 seconds, kills timed-out processes, then clears `pid` and `is_running`. It also revokes the cached timeout task. If no process can be found, it clears the flags and reports failure.
+A stop reservation is tied to the current run and one task attempt. Before signaling the direct/discovered root, the worker checks the current reservation, run marker, PID birth time, and persisted expected executable. UDP discovery supplies candidate identities only and is never sufficient authority by itself. Descendant candidates are checked against birth time, run marker, and verified ancestry; the root's expected executable is not compared to each child. Stop and compensation recheck the direct process executable; reconciliation also checks it. A root mismatch or unverifiable identity leaves the instance unknown and sends no signal. A legacy row without verified process identity remains unknown and receives no signal. If a launched shell cannot be identified as the expected Arma executable, it remains unverified rather than inheriting the expected identity from its PID or marker.
 
-`instance_timeout_task` is intentionally small: it looks up the instance and delegates to the stop task only when the instance still reports running. Missing instances are ignored.
+Recovery preserves claimed/unclaimed stop state and may supersede prior attempts only after exit is confirmed. A per-instance one-hour deadline is scheduled after a successful user-server launch; old timeout deliveries cannot stop a later run. This is an instance deadline, not a browser-wide timestamp.
+
+Process identity checks are fail-closed, but they do not establish absolute process containment. SQLite regression runs do not prove MySQL lock serialization or live host behavior.
 
 ## Delete and logs
 
-Running instances cannot be deleted. Deleting a stopped instance removes its preset, log, generated start file, and releases its port through the model override. Logs can be read completely or by tail count, downloaded, and deleted only while the instance is stopped.
+The accepted service rejects running, starting, stopping, downloading, and unknown instances; user deletion preflights every owned instance/file before mutation, never autostops, and releases ports only through the guarded successful cleanup. Saved preset/start/log/config references are validated under trusted roots. A private cleanup failure returns static `cleanup_pending` metadata and warning without exposing repair paths. Only one `Instances.delete()` or `Profile.delete()` call through the service is supported; queryset/admin bulk deletion bypasses the overrides. Verified successful compensation may leave an empty validated per-user log parent and no remaining file bytes/private stages in the regression-covered cases. Unsuccessful or uncertain rollback may leave unresolved public paths or private stage/backup evidence; preserve it for operator review.
 
-## Administrative instances
+## Operator recovery
 
-Staff can see shared `is_admin_instance` rows, start/stop them, and replace a stopped administrative preset. Administrative operations use the superuser's identity for generated files/logging. Administrative instances do not receive the one-hour user timeout. Application operation logs are separate from the instance `log_file` streamed from the Arma process.
+Before manual repair, an authorized operator must verify worker quiescence and confirm the current run ID, process birth time, run marker, and canonical executable through approved operations. Never blind-kill a PID, delete cache data, reset a claim, or remove a workspace while a process may still be alive. No reset endpoint is added. Preserve the structured attention evidence and use it to make the manual decision.
+## Start task compatibility
 
-## Failure boundaries
-
-- A Celery task can fail after the database row or log has already changed.
-- A missing generated script, SteamCMD path, mod directory, log path, or process can leave an instance not ready or not running.
-- The task result backend and cache are required for progress polling and duplicate-work prevention.
-- Process termination is host-wide and must be verified manually in an approved test environment.
+New start tasks publish only the instance and run identifiers after the reservation transaction commits. The task accepts a legacy `arma3_dir` keyword for already queued messages, discards it immediately, and derives the launch directory from persisted process data.
