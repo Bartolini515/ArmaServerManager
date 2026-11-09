@@ -420,6 +420,44 @@ assert.equal(
 	),
 	null,
 );
+for (const [id, offset] of [
+	[17, "+05:30"],
+	[18, "+05:45"],
+	[19, "-03:30"],
+] as const) {
+	const deadline = `2031-01-02T10:00:00${offset}`;
+	assert.equal(
+		getShutdownAt(
+			makeInstance({
+				id,
+				name: `offset-${offset}`,
+				is_running: true,
+				lifecycle_state: "running",
+				shutdown_at: deadline,
+			}),
+		),
+		deadline,
+		`valid timezone offset ${offset} should retain the shutdown deadline`,
+	);
+}
+for (const [id, offset] of [
+	[20, "+24:00"],
+	[21, "+05:60"],
+] as const) {
+	assert.equal(
+		getShutdownAt(
+			makeInstance({
+				id,
+				name: `invalid-offset-${offset}`,
+				is_running: true,
+				lifecycle_state: "running",
+				shutdown_at: `2031-01-02T10:00:00${offset}`,
+			}),
+		),
+		null,
+		`invalid timezone offset ${offset} should be rejected`,
+	);
+}
 
 const slowTimers = new ControlledTimers();
 const slowRefreshBlocks = setReconciliationBlock(new Map(), 30, 100, 4);

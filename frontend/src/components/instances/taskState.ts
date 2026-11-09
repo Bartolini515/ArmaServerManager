@@ -438,8 +438,8 @@ export function getShutdownAt(instance: Instance): string | null {
 		30,
 		31,
 	][month - 1];
-	const offsetHour = Number(match[10] ?? 0);
-	const offsetMinute = Number(match[11] ?? 0);
+	const offsetHour = Number(match[9] ?? 0);
+	const offsetMinute = Number(match[10] ?? 0);
 	if (
 		!daysInMonth ||
 		day < 1 ||
