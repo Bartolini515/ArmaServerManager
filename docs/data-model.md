@@ -16,6 +16,8 @@ The custom `AbstractUser` configured as `AUTH_USER_MODEL`. The username is uniqu
 
 An instance has a unique `name`, owning `Profile`, unique uploaded `preset`, optional `log_file`, optional generated `start_file_path`, one-to-one `Ports` relation, readiness/running flags, an administrative flag, and `created_at`.
 
+The offline `relocate_arma_paths` management command can validate and transactionally update expected instance `start_file_path` and profile `server_config` references after their files have been copied. It does not move files or update runtime configuration; see [files and missions](domain/files-and-missions.md).
+
 Lifecycle fields added by migration `0010_instance_lifecycle` are:
 
 - `run_id`: UUID for the current server run.

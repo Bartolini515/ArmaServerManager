@@ -34,6 +34,8 @@ Before any manual recovery, the operator must verify worker quiescence and the c
 
 ## Instance deletion, preset replacement, or user deletion fails
 
+After an offline Arma directory relocation, changing the configured root alone leaves instance start and profile configuration references pointing at the old root. The `relocate_arma_paths` command supports a dry run and an explicit transactional reference update under the offline constraints in [files and missions](domain/files-and-missions.md); it does not handle mounts, configuration, scripts, or service quiescence.
+
 The accepted storage service fails closed for active/uncertain work and avoids autostop. A preset replacement restores the previous file/metadata only when precommit compensation succeeds and verifies it. Failed or uncertain restoration/cleanup may leave unresolved public paths or private stage/backup evidence; the journal raises `ManagedFileRollbackError` and retains repair evidence where available. A single model deletion through the service is supported; bulk deletion is not. A cleanup-pending summary and static administrator warning are path-free. Verified successful compensation may leave an empty validated user log parent; regression results do not prove that every rollback succeeds cleanly. Escalate uncertain cleanup evidence to an authorized operator; do not manually remove files until database commit and process quiescence are verified.
 
 ## Logs are missing
