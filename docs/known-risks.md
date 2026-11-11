@@ -38,6 +38,8 @@ Steam username, password, shared secret and generated Guard values must be redac
 
 Operation logs have no automatic retention or rotation and may contain operational data. They require an authorized retention procedure. The separate Arma process log follows instance media authorization and cleanup rules.
 
+Incremental log polling cannot reliably detect a same-file truncate-and-regrow operation that completes between polls and grows beyond the previous cursor.
+
 The generated known administrator password finding remains intentionally excluded by the user design. Mission behavior remains outside this remediation scope.
 
 ## Validation limits

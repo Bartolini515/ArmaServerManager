@@ -7,6 +7,10 @@ import {
 	Fade,
 	Modal,
 	Typography,
+	FormControlLabel,
+	Switch,
+	Select,
+	MenuItem,
 } from "@mui/material";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
@@ -42,9 +46,17 @@ type Props = {
 export default function ServerLogsModal(props: Props) {
 	const { setAlert } = useAlert();
 	const [logs, setLogs] = useState("");
-	const logTextArea = useRef<HTMLTextAreaElement>(null);
+	const logTextArea = useRef<HTMLPreElement>(null);
 	const mountedRef = useRef(false);
-	// const [tailLines, setTailLines] = useState(1000);
+	const displayedLength = useRef(0);
+	const [tailLines, setTailLines] = useState(() => {
+		const value = Number(localStorage.getItem("logTailLines"));
+		return [100, 500, 1000, 2000].includes(value) ? value : 2000;
+	});
+	const [autoRefresh, setAutoRefresh] = useState(() => localStorage.getItem("logAutoRefresh") === "true");
+	const [refresh, setRefresh] = useState(0);
+	const [logError, setLogError] = useState("");
+	const [truncated, setTruncated] = useState(false);
 	const [loading, setLoading] = useState(true);
 
 	useEffect(() => {
@@ -55,27 +67,48 @@ export default function ServerLogsModal(props: Props) {
 	}, []);
 
 	useEffect(() => {
-		if (props.selectedInstanceId !== null) {
-			GetLogs(props.selectedInstanceId);
-		}
-	}, [props.selectedInstanceId]);
-
-	const GetLogs = (id: number) => {
-		AxiosInstance.get(`instances/${id}/logs/`, { params: { tail: 2000 } })
-			.then((response) => {
-				const newLogs: string = response.data;
-				setLogs((prev) => (prev === newLogs ? prev : newLogs));
-				if (logTextArea.current) {
-					logTextArea.current.scrollTop = logTextArea.current.scrollHeight;
+		localStorage.setItem("logTailLines", String(tailLines));
+		localStorage.setItem("logAutoRefresh", String(autoRefresh));
+		let active = true;
+		let timer: ReturnType<typeof setTimeout>;
+		let cursor: string | undefined;
+		const controller = new AbortController();
+		setLoading(true);
+		const poll = async () => {
+			let delay = 1000;
+			try {
+				const response = await AxiosInstance.get(`instances/${props.selectedInstanceId}/logs/incremental/`, {
+					params: { tail: tailLines, cursor }, signal: controller.signal,
+				});
+				if (!active) return;
+				const data = response.data as { content: string; cursor: string; reset: boolean; truncated: boolean; has_more: boolean };
+				const element = logTextArea.current;
+				const follow = !element || element.scrollHeight - element.scrollTop - element.clientHeight < 20;
+				const replace = !cursor || data.reset;
+				cursor = data.cursor;
+				const clipped = !replace && displayedLength.current + data.content.length > 262144;
+				setLogs(previous => {
+					const text = (replace ? data.content : previous + data.content).slice(-262144);
+					const result = text.split("\n").slice(-(tailLines + 1)).join("\n");
+					displayedLength.current = result.length;
+					return result;
+				});
+				setTruncated(previous => replace ? data.truncated : previous || clipped);
+				setLogError("");
+				if (follow) requestAnimationFrame(() => { if (logTextArea.current) logTextArea.current.scrollTop = logTextArea.current.scrollHeight; });
+				if (data.has_more) delay = 0;
+			} catch (error: unknown) {
+				if (active) setLogError(getApiErrorMessage(error, "Nie udało się odświeżyć logów."));
+			} finally {
+				if (active) {
+					setLoading(false);
+					if (autoRefresh) timer = setTimeout(poll, delay);
 				}
-				setLoading(false);
-			})
-			.catch((error: unknown) => {
-				console.log(error);
-				setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");
-				setLoading(false);
-			});
-	};
+			}
+		};
+		void poll();
+		return () => { active = false; clearTimeout(timer); controller.abort(); };
+	}, [props.selectedInstanceId, tailLines, autoRefresh, refresh]);
 
 	const DownloadLogs = (id: number) => {
 		AxiosInstance.get(`instances/${id}/logs/download/`)
@@ -143,6 +176,12 @@ export default function ServerLogsModal(props: Props) {
 								Logi
 							</Typography>
 						</Box>
+						<Select size="small" aria-label="Liczba wierszy" value={tailLines} onChange={event => setTailLines(Number(event.target.value))}>
+							{[100, 500, 1000, 2000].map(value => <MenuItem key={value} value={value}>{value} wierszy</MenuItem>)}
+						</Select>
+						<FormControlLabel control={<Switch checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} />} label="Automatyczne odświeżanie" />
+						{logError && <Typography color="error">{logError}</Typography>}
+						{truncated && <Typography>Starsza część logu została ucięta.</Typography>}
 						<Button
 							sx={{
 								position: "absolute",
@@ -187,7 +226,7 @@ export default function ServerLogsModal(props: Props) {
 							color="primary"
 							aria-label="refresh logs"
 							component="label"
-							onClick={() => GetLogs(props.selectedInstanceId)}
+							onClick={() => setRefresh(value => value + 1)}
 						>
 							<RefreshIcon />
 						</Button>

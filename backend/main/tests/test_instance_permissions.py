@@ -563,3 +563,41 @@ class InstancePermissionTests(TransactionTestCase):
         )
         self.assertEqual(response.data["result"]["user"]["username"], "owner")
         self.assertEqual(response.data["result"]["port"], str(available_port.port_number))
+
+    def test_incremental_log_returns_only_new_bytes(self):
+        instance = self.make_instance(with_log=True)
+        self.client.force_authenticate(self.owner)
+        url = f"/api/instances/{instance.pk}/logs/incremental/"
+        initial = self.client.get(url, {"tail": 100})
+        self.assertEqual(initial.status_code, 200)
+        self.assertEqual(initial.data["content"], "invented log line\n")
+        with open(instance.log_file.path, "ab") as log:
+            log.write(b"new line\n")
+        updated = self.client.get(url, {"cursor": initial.data["cursor"]})
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.data["content"], "new line\n")
+
+    def test_incremental_log_resets_after_truncation(self):
+        instance = self.make_instance(with_log=True)
+        self.client.force_authenticate(self.owner)
+        url = f"/api/instances/{instance.pk}/logs/incremental/"
+        initial = self.client.get(url)
+        with open(instance.log_file.path, "wb") as log:
+            log.write(b"new\n")
+        updated = self.client.get(url, {"cursor": initial.data["cursor"]})
+        self.assertTrue(updated.data["reset"])
+        self.assertEqual(updated.data["content"], "new\n")
+
+    def test_incremental_log_waits_for_complete_utf8_character(self):
+        instance = self.make_instance(with_log=True)
+        self.client.force_authenticate(self.owner)
+        url = f"/api/instances/{instance.pk}/logs/incremental/"
+        initial = self.client.get(url)
+        with open(instance.log_file.path, "ab") as log:
+            log.write(b"\xc5")
+        partial = self.client.get(url, {"cursor": initial.data["cursor"]})
+        self.assertEqual(partial.data["content"], "")
+        with open(instance.log_file.path, "ab") as log:
+            log.write(b"\x82")
+        complete = self.client.get(url, {"cursor": partial.data["cursor"]})
+        self.assertEqual(complete.data["content"], "ł")

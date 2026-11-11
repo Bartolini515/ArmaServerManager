@@ -12,6 +12,8 @@ from .models import *
 from django.contrib.auth import get_user_model, authenticate
 from django.utils import timezone
 from django.core.files.base import ContentFile
+from django.core import signing
+import codecs
 from knox.models import AuthToken
 import psutil
 import platform
@@ -1103,6 +1105,49 @@ class InstancesViewset(viewsets.ModelViewSet):
         except ManagedFileError:
             return _operation_error("Nie udało się odczytać pliku logu.")
         return Response(content, content_type="text/plain", status=200)
+
+    @action(detail=True, methods=['get'], url_path='logs/incremental')
+    def incremental_logs(self, request, pk=None):
+        instance = self._get_authorized_instance(pk)
+        try:
+            tail = int(request.query_params.get('tail', 2000))
+            if tail not in (100, 500, 1000, 2000):
+                raise ValueError
+            token = request.query_params.get('cursor')
+            cursor = signing.loads(token, salt='instance-log') if token else None
+            if cursor and (cursor['instance'] != instance.pk or cursor['offset'] < 0):
+                raise ValueError
+        except (ValueError, KeyError, TypeError, signing.BadSignature):
+            return Response({'message': 'Nieprawidłowy kursor logu.'}, status=400)
+        try:
+            path = validate_instance_log_file(instance)
+            if not path:
+                return Response({'message': 'Brak logów lub plik nie istnieje.'}, status=404)
+            with open_validated_file(path) as log:
+                info = os.fstat(log.fileno())
+                identity = [info.st_dev, info.st_ino]
+                reset = bool(cursor and (cursor['identity'] != identity or cursor['offset'] > info.st_size))
+                initial = cursor is None or reset
+                start = max(0, info.st_size - 262144) if initial else cursor['offset']
+                log.seek(start)
+                data = log.read(262144 if initial else 65536)
+                decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+                content = decoder.decode(data, final=False)
+                pending, _ = decoder.getstate()
+                offset = start + len(data) - len(pending)
+                truncated = initial and start > 0
+                if initial:
+                    lines = content.splitlines(keepends=True)
+                    if len(lines) > tail:
+                        content = ''.join(lines[-tail:])
+                next_cursor = signing.dumps({'instance': instance.pk, 'identity': identity, 'offset': offset}, salt='instance-log')
+                return Response({'content': content, 'cursor': next_cursor, 'reset': reset, 'truncated': truncated, 'has_more': offset < info.st_size - len(pending)})
+        except (ManagedFileMissingError, FileNotFoundError):
+            return Response({'message': 'Brak logów lub plik nie istnieje.'}, status=404)
+        except UnsafeManagedPathError:
+            return _managed_path_error('Plik logu wymaga weryfikacji przez administratora.')
+        except (ManagedFileError, OSError):
+            return _operation_error('Nie udało się odczytać pliku logu.')
 
     @action(detail=True, methods=['get'], url_path='logs/download')
     def download_logs(self, request, pk=None):

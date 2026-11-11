@@ -37,6 +37,7 @@ This document maps responsibilities without listing every file. Code and tests r
 | Authentication | Identity/admin bootstrap and retry state for transient failures | `frontend/src/contexts/AuthContext.tsx`, `frontend/src/components/ProtectedRoutes.tsx` |
 | Dashboard | System resource polling | `frontend/src/components/dashboard/` |
 | Instances | Staff/user sections, per-instance lifecycle display, task polling, create/delete/start/stop/download/log flows | `frontend/src/components/instances/` |
+| Incremental instance logs | Bounded cursor-based log reads and browser-side polling | `backend/main/views.py`, `frontend/src/components/instances/modals/ServerLogsModal.tsx` |
 | Missions | `.pbo` upload form | `frontend/src/components/missions/` |
 | Moderator panel | User management and configuration editing with masked payload handling | `frontend/src/components/moderatorPanel/` |
 | Account/settings | Password change, theme, and appearance preferences | `frontend/src/components/account/`, `frontend/src/components/settings/` |
