@@ -14,7 +14,7 @@ import {
 	getApiErrorData,
 	getApiErrorMessage,
 	getApiErrorStatus,
-	getFieldErrorMessage,
+	getCreateInstanceErrors,
 } from "../../../util/api-error";
 
 const style = {
@@ -67,12 +67,15 @@ export default function CreateInstanceModal(props: Props) {
 			.catch((error: unknown) => {
 				const serverErrors = getApiErrorData(error);
 				if (getApiErrorStatus(error) === 400 && serverErrors) {
-					Object.keys(serverErrors).forEach((field) => {
-						setError(field as keyof FormData, {
+					const { fields, message } = getCreateInstanceErrors(serverErrors);
+					for (const field of ["name", "preset"] as const) {
+						if (!fields[field]) continue;
+						setError(field, {
 							type: "server",
-							message: getFieldErrorMessage(serverErrors, field),
+							message: fields[field],
 						});
-					});
+					}
+					if (message) setAlert(message, "error");
 				} else {
 					console.log(error);
 					setAlert(getApiErrorMessage(error, "Wystąpił błąd."), "error");

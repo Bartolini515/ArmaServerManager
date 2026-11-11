@@ -47,3 +47,15 @@ export function getFieldErrorMessage(
 	}
 	return "Nieprawidłowa wartość.";
 }
+
+export function getCreateInstanceErrors(data: ApiErrorData): {
+	fields: Partial<Record<"name" | "preset", string>>;
+	message?: string;
+} {
+	const fields: Partial<Record<"name" | "preset", string>> = {};
+	for (const field of ["name", "preset"] as const) {
+		if (field in data) fields[field] = getFieldErrorMessage(data, field);
+	}
+	const generalField = Object.keys(data).find((field) => field !== "name" && field !== "preset");
+	return { fields, message: generalField ? getFieldErrorMessage(data, generalField) : undefined };
+}
