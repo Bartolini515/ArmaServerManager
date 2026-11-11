@@ -17,7 +17,7 @@ import codecs
 from knox.models import AuthToken
 import psutil
 import platform
-from django.db import DatabaseError, transaction
+from django.db import DatabaseError, IntegrityError, transaction
 from uuid import uuid4
 from .modpreset.modpathing import check_installed
 from .modpreset.preset_extraction import preset_parser
@@ -59,6 +59,9 @@ from .instance_management import (
     delete_instance,
     delete_instance_logs,
     delete_mission,
+    create_prepared_preset,
+    delete_prepared_preset,
+    copy_prepared_preset,
     delete_profile,
     open_validated_file,
     preflight_managed_root_layout,
@@ -69,6 +72,28 @@ from .instance_management import (
     validate_instance_start_file,
 )
 User = get_user_model()
+
+
+def _preset_request_data(request):
+    upload = request.FILES.get('preset')
+    preset_id = request.data.get('prepared_preset_id')
+    if upload and preset_id:
+        return None, None, Response({'preset': ['Wybierz tylko jedno źródło presetu.']}, status=400)
+    data = request.data.copy()
+    data.pop('prepared_preset_id', None)
+    if preset_id:
+        try:
+            identifier = int(preset_id)
+            if identifier <= 0:
+                raise ValueError
+            captured = copy_prepared_preset(identifier)
+        except (ValueError, TypeError, InstanceNotFoundError):
+            return None, None, Response({'preset': ['Przygotowana paczka nie istnieje.']}, status=400)
+        except (ManagedFileError, OSError):
+            return None, None, _managed_path_error('Plik paczki wymaga weryfikacji przez administratora.')
+        data['preset'] = captured
+        return data, captured, None
+    return data, None, None
 
 
 class InstanceLifecycleBusy(RuntimeError):
@@ -374,8 +399,18 @@ class InstancesViewset(viewsets.ModelViewSet):
 
     def create(self, request):
         """Validate an upload, then publish the instance and its managed files together."""
+        data, captured, error = _preset_request_data(request)
+        if error:
+            return error
+        try:
+            return self._create_with_data(request, data)
+        finally:
+            if captured:
+                captured.close()
+
+    def _create_with_data(self, request, data):
         user = self.request.user
-        serializer = self.serializer_class(data=request.data)
+        serializer = self.serializer_class(data=data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
 
@@ -796,6 +831,16 @@ class InstancesViewset(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="admin_instance/change_preset", permission_classes=[permissions.IsAdminUser])
     def change_preset(self, request, pk=None):
+        data, captured, error = _preset_request_data(request)
+        if error:
+            return error
+        try:
+            return self._change_preset_with_data(request, pk, data)
+        finally:
+            if captured:
+                captured.close()
+
+    def _change_preset_with_data(self, request, pk, data):
         try:
             instance = self._get_authorized_instance(pk)
         except Http404:
@@ -808,7 +853,7 @@ class InstancesViewset(viewsets.ModelViewSet):
         if not instance.is_admin_instance:
             return Response({"message": "To nie jest instancja administracyjna."}, status=400)
 
-        serializer = self.serializer_class(instance, data=request.data, partial=True)
+        serializer = self.serializer_class(instance, data=data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
         if "preset" not in serializer.validated_data:
@@ -1213,6 +1258,44 @@ class InstancesViewset(viewsets.ModelViewSet):
             return _operation_error("Nie udało się usunąć logów.")
         return _delete_response(result, "Logi zostały usunięte")
     
+class PreparedPresetViewset(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = PreparedPreset.objects.all().order_by('name', 'id')
+    serializer_class = PreparedPresetSerializer
+
+    def list(self, request):
+        return Response(self.serializer_class(self.get_queryset(), many=True).data)
+
+    def create(self, request):
+        if not request.user.is_staff:
+            return Response({'message': 'Brak uprawnień.'}, status=403)
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            record, pending = create_prepared_preset(name=serializer.validated_data['name'], upload=serializer.validated_data['preset_file'], config_snapshot=config.snapshot())
+        except IntegrityError:
+            return Response({'name': ['Nazwa paczki już istnieje.']}, status=400)
+        except ManagedFileError:
+            return _operation_error('Nie udało się bezpiecznie zapisać paczki.')
+        payload = dict(self.serializer_class(record).data)
+        if pending:
+            payload['cleanup_pending'] = True
+        return Response(payload, status=201)
+
+    def destroy(self, request, pk=None):
+        if not request.user.is_staff:
+            return Response({'message': 'Brak uprawnień.'}, status=403)
+        try:
+            pending = delete_prepared_preset(preset_id=pk, config_snapshot=config.snapshot())
+        except InstanceNotFoundError:
+            return Response({'message': 'Paczka nie istnieje.'}, status=404)
+        except ManagedFileError:
+            return _operation_error('Nie udało się bezpiecznie usunąć paczki.')
+        if pending:
+            return Response({'message': 'Paczka usunięta; czyszczenie wymaga uwagi administratora.', 'cleanup_pending': True})
+        return Response(status=204)
+
+
 class MissionsViewset(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     queryset = Missions.objects.all()

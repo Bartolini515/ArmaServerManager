@@ -171,6 +171,23 @@ class InstanceSerializer(serializers.ModelSerializer):
         )
         
 # MissionsSerializers
+class PreparedPresetSerializer(serializers.ModelSerializer):
+    def validate_preset_file(self, value):
+        return InstanceSerializer().validate_preset(value)
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value or len(value.casefold()) > 255:
+            raise serializers.ValidationError('Nieprawidłowa nazwa paczki.')
+        if PreparedPreset.objects.filter(name_key=value.casefold()).exists():
+            raise serializers.ValidationError('Nazwa paczki już istnieje.')
+        return value
+
+    class Meta:
+        model = PreparedPreset
+        fields = ('id', 'name', 'preset_file')
+
+
 class MissionSerializer(serializers.ModelSerializer):
     def validate_mission_file(self, value):
         filename = value.name if hasattr(value, 'name') else str(value)

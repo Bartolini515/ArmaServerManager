@@ -13,7 +13,7 @@ from django.test import TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 
 from main.instance_tasks import create_instance_task_binding
-from main.models import InstanceTask, Instances, Ports
+from main.models import InstanceTask, Instances, Ports, PreparedPreset
 from main.tasks import start_server_task, stop_server_task
 
 
@@ -601,3 +601,37 @@ class InstancePermissionTests(TransactionTestCase):
             log.write(b"\x82")
         complete = self.client.get(url, {"cursor": partial.data["cursor"]})
         self.assertEqual(complete.data["content"], "ł")
+
+    def test_create_with_prepared_preset_copies_content(self):
+        prepared = PreparedPreset.objects.create(name='Paczka', name_key='paczka', preset_file=SimpleUploadedFile('mods.html', b'<html>fixture</html>'))
+        Ports.objects.create(port_number=self.next_port, is_available=True)
+        self.authenticate_as(self.owner)
+        @contextmanager
+        def fake_loggers(*args, **kwargs):
+            yield {'create': MagicMock()}
+        with self.parser_context(return_value=[]), patch('main.views.operation_loggers', side_effect=fake_loggers):
+            response = self.client.post('/api/instances/', {'name': 'prepared-instance', 'prepared_preset_id': prepared.pk}, format='multipart')
+        self.assertEqual(response.status_code, 200, response.data)
+        instance = Instances.objects.get(name='prepared-instance')
+        self.assertNotEqual(instance.preset.name, prepared.preset_file.name)
+        self.assertEqual(Path(instance.preset.path).read_bytes(), b'<html>fixture</html>')
+        self.assertEqual(Path(prepared.preset_file.path).read_bytes(), b'<html>fixture</html>')
+
+    def test_create_rejects_both_preset_sources(self):
+        prepared = PreparedPreset.objects.create(name='Paczka', name_key='paczka', preset_file=SimpleUploadedFile('mods.html', b'fixture'))
+        self.authenticate_as(self.owner)
+        response = self.client.post('/api/instances/', {'name': 'fixture', 'prepared_preset_id': prepared.pk, 'preset': SimpleUploadedFile('custom.html', b'fixture')}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+
+    def test_admin_change_to_prepared_preset_copies_content(self):
+        prepared = PreparedPreset.objects.create(name='Paczka', name_key='paczka', preset_file=SimpleUploadedFile('mods.html', b'<html>fixture</html>'))
+        instance = self.make_instance(self.superuser, name='admin-prepared', is_admin_instance=True)
+        self.authenticate_as(self.staff)
+        with self.parser_context(return_value=[]), patch('main.views.operation_loggers') as loggers:
+            loggers.return_value.__enter__.return_value = {'change_preset': MagicMock()}
+            loggers.return_value.__exit__.return_value = False
+            response = self.client.post(f'/api/instances/{instance.pk}/admin_instance/change_preset/', {'prepared_preset_id': prepared.pk}, format='multipart')
+        self.assertEqual(response.status_code, 200, response.data)
+        instance.refresh_from_db()
+        self.assertNotEqual(instance.preset.name, prepared.preset_file.name)
+        self.assertEqual(Path(instance.preset.path).read_bytes(), b'<html>fixture</html>')

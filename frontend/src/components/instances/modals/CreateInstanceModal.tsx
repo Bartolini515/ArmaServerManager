@@ -10,6 +10,8 @@ import { useForm } from "react-hook-form";
 import MyButton from "../../../UI/forms/MyButton";
 import { useAlert } from "../../../contexts/AlertContext";
 import MyDropzone from "../../../UI/forms/MyDropzone";
+import { useState } from "react";
+import PreparedPresetSelect from "./PreparedPresetSelect";
 import {
 	getApiErrorData,
 	getApiErrorMessage,
@@ -44,6 +46,7 @@ interface FormData {
 }
 
 export default function CreateInstanceModal(props: Props) {
+	const [preparedId, setPreparedId] = useState<number | "">("");
 	const { handleSubmit, control, setError, clearErrors, setValue } =
 		useForm<FormData>({
 			defaultValues: {
@@ -55,7 +58,11 @@ export default function CreateInstanceModal(props: Props) {
 	const { setAlert } = useAlert();
 
 	const submission = (data: FormData) => {
-		AxiosInstance.post(`/instances/`, data, {
+		const payload = new window.FormData();
+		payload.append("name", data.name);
+		if (preparedId !== "") payload.append("prepared_preset_id", String(preparedId));
+		else if (data.preset) payload.append("preset", data.preset);
+		AxiosInstance.post(`/instances/`, payload, {
 			headers: {
 				"Content-Type": "multipart/form-data",
 			},
@@ -181,7 +188,8 @@ export default function CreateInstanceModal(props: Props) {
 									Preset modyfikacji
 								</Typography>
 
-								<MyDropzone
+								<PreparedPresetSelect value={preparedId} onChange={setPreparedId} />
+								{preparedId === "" && <MyDropzone
 									label={"Prześlij preset"}
 									name={"preset"}
 									control={control}
@@ -201,7 +209,7 @@ export default function CreateInstanceModal(props: Props) {
 										justifyContent: "center",
 										alignItems: "center",
 									}}
-								></MyDropzone>
+								></MyDropzone>}
 							</Box>
 
 							<MyButton

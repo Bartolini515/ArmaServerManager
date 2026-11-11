@@ -5,6 +5,7 @@ import { useState } from "react";
 import CreateForPanelDataModal from "./modals/CreateForPanelDataModal";
 import type { UserModeratorOption } from "./types";
 import MissionManagement from "./MissionManagement";
+import PreparedPresetManagement from "./PreparedPresetManagement";
 
 const optionsMap: Record<"user", UserModeratorOption> = {
 	user: {
@@ -29,7 +30,7 @@ const optionsMap: Record<"user", UserModeratorOption> = {
 
 export default function ModeratorPanelDataManagement() {
 	const [selectedOption, setSelectedOption] =
-		useState<"user" | "mission">("user");
+		useState<"user" | "mission" | "prepared">("user");
 	const [open, setOpen] = useState(false);
 	const [refresh, setRefresh] = useState(false);
 	const handleClick = () => {
@@ -46,15 +47,15 @@ export default function ModeratorPanelDataManagement() {
 			<Box sx={{ width: "30%" }}>
 				<SingleSelectAutoWidth
 					label="Tabela"
-					options={[{ id: 0, option: "user", label: "Użytkownicy" }, { id: 1, option: "mission", label: "Misje" }]}
+					options={[{ id: 0, option: "user", label: "Użytkownicy" }, { id: 1, option: "mission", label: "Misje" }, { id: 2, option: "prepared", label: "Przygotowane paczki" }]}
 					setSelectedOption={(value) =>
-						setSelectedOption(value as "user" | "mission")
+						setSelectedOption(value as "user" | "mission" | "prepared")
 					}
 					selectedOption={selectedOption}
 				/>
 			</Box>
 
-			{selectedOption === "mission" ? <MissionManagement /> : <><ModeratorPanelDataManagementTable
+			{selectedOption === "mission" ? <MissionManagement /> : selectedOption === "prepared" ? <PreparedPresetManagement /> : <><ModeratorPanelDataManagementTable
 				option={optionsMap.user}
 				refresh={refresh}
 				setRefresh={setRefresh}

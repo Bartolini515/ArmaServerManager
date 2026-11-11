@@ -21,6 +21,7 @@ This document maps responsibilities without listing every file. Code and tests r
 | Download lease primitive | Owner-token Redis lease, bounded client I/O, heartbeat and guarded release | `backend/main/download_leases.py` |
 | Download worker and HTTP integration | Durable download claim, cancellation fencing, shared-cache protection, admission ordering and task-status attention mapping | `backend/main/download_jobs.py`, `backend/main/tasks.py`, `backend/main/views.py` — accepted worker and scoped API integration |
 | Preset processing | Workshop ID extraction, installed-mod checks, generated paths | `backend/main/modpreset/` |
+| Prepared presets | Shared catalog, managed storage and instance-copy selection | `backend/main/instance_management.py`, `frontend/src/components/moderatorPanel/PreparedPresetManagement.tsx` |
 | Steam integration | Authentication, Steam Guard, download subprocess and output handling | `backend/main/steamcmd/`, `backend/main/utils/process_output.py` |
 | Configuration | Fresh JSON snapshots, locked merge updates and atomic local replacement | `backend/main/utils/config.py`, `backend/main/utils/config_lock.py` |
 | Logging | Per-operation files, grouped Celery logs, safe error records | `backend/main/utils/operation_logging.py`, `backend/main/tasks.py`, `backend/main/views.py` |
