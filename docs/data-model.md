@@ -50,7 +50,7 @@ Contains a unique integer `port_number` and an `is_available` flag. Creation res
 
 ### `Missions`
 
-Stores an uploaded `mission_file` under `missions/`. The current serializer replaces an existing mission with the same stored filename before creating the new record. There is no uploader relation or version history. Mission behavior remains outside this remediation scope.
+Stores an uploaded `mission_file` under `missions/`. The serializer replaces an existing mission with the same stored filename before creating the new record. There is no uploader relation or version history. Staff deletion uses a managed file journal and rejects unsafe or shared file references.
 
 ## Relationship summary
 

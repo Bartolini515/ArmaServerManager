@@ -58,6 +58,7 @@ from .instance_management import (
     create_instance,
     delete_instance,
     delete_instance_logs,
+    delete_mission,
     delete_profile,
     open_validated_file,
     preflight_managed_root_layout,
@@ -1216,6 +1217,23 @@ class MissionsViewset(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     queryset = Missions.objects.all()
     serializer_class = MissionSerializer
+
+    def destroy(self, request, pk=None):
+        if not request.user.is_staff:
+            return Response({'message': 'Brak uprawnień.'}, status=403)
+        try:
+            pending = delete_mission(mission_id=pk, config_snapshot=config.snapshot())
+        except InstanceBusyError:
+            return Response({'message': 'Nie można usunąć misji, gdy jakakolwiek instancja działa.'}, status=409)
+        except InstanceNotFoundError:
+            return Response({'message': 'Misja nie została znaleziona.'}, status=404)
+        except UnsafeManagedPathError:
+            return Response({'message': 'Plik misji wymaga weryfikacji przez administratora.'}, status=400)
+        except (ManagedFileError, OSError, DatabaseError):
+            return _operation_error('Nie udało się bezpiecznie usunąć misji.')
+        if pending:
+            return Response({'message': 'Misja usunięta; czyszczenie wymaga uwagi administratora.', 'cleanup_pending': True}, status=200)
+        return Response(status=204)
     
     def create(self, request):
         serializer = self.serializer_class(data=request.data)

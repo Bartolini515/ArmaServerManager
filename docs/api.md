@@ -97,5 +97,6 @@ The staff configuration response masks only non-empty `steam_auth.password` and 
 | Method | Path | Access | Behavior |
 | --- | --- | --- | --- |
 | POST | `/api/missions/` | Authenticated | Accepts one `.pbo` upload; a same-stored-filename mission is replaced. |
+| DELETE | `/api/missions/<id>/` | Staff | Removes the mission and managed file; returns 409 while any instance has `is_running=true`. A missing file does not prevent deletion; unsafe references are rejected. Private cleanup failure is reported. |
 
-Missions do not have an uploader relation or version history in the current model. Mission behavior is outside the Task 9 remediation scope.
+Missions do not have an uploader relation or version history. Upload replacement behavior is unchanged.

@@ -4,6 +4,7 @@ import SingleSelectAutoWidth from "../../UI/forms/SingleSelectAutoWidth";
 import { useState } from "react";
 import CreateForPanelDataModal from "./modals/CreateForPanelDataModal";
 import type { UserModeratorOption } from "./types";
+import MissionManagement from "./MissionManagement";
 
 const optionsMap: Record<"user", UserModeratorOption> = {
 	user: {
@@ -28,7 +29,7 @@ const optionsMap: Record<"user", UserModeratorOption> = {
 
 export default function ModeratorPanelDataManagement() {
 	const [selectedOption, setSelectedOption] =
-		useState<keyof typeof optionsMap>("user");
+		useState<"user" | "mission">("user");
 	const [open, setOpen] = useState(false);
 	const [refresh, setRefresh] = useState(false);
 	const handleClick = () => {
@@ -45,35 +46,31 @@ export default function ModeratorPanelDataManagement() {
 			<Box sx={{ width: "30%" }}>
 				<SingleSelectAutoWidth
 					label="Tabela"
-					options={Object.keys(optionsMap).map((key, index) => ({
-						id: index,
-						option: key,
-						label: optionsMap[key as keyof typeof optionsMap].label,
-					}))}
+					options={[{ id: 0, option: "user", label: "Użytkownicy" }, { id: 1, option: "mission", label: "Misje" }]}
 					setSelectedOption={(value) =>
-						setSelectedOption(value as keyof typeof optionsMap)
+						setSelectedOption(value as "user" | "mission")
 					}
 					selectedOption={selectedOption}
 				/>
 			</Box>
 
-			<ModeratorPanelDataManagementTable
-				option={optionsMap[selectedOption]}
+			{selectedOption === "mission" ? <MissionManagement /> : <><ModeratorPanelDataManagementTable
+				option={optionsMap.user}
 				refresh={refresh}
 				setRefresh={setRefresh}
 			/>
 			<Divider sx={{ marginBottom: "20px" }} />
 			<Button variant="contained" color="primary" onClick={handleClick}>
-				{optionsMap[selectedOption].buttonAdd}
+				{optionsMap.user.buttonAdd}
 			</Button>
 			{open && (
 				<CreateForPanelDataModal
-					option={optionsMap[selectedOption]}
+					option={optionsMap.user}
 					open={open}
 					setOpen={setOpen}
 					setRefresh={setRefresh}
 				/>
-			)}
+			)}</>}
 		</Box>
 	);
 }

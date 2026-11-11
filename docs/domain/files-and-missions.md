@@ -50,4 +50,4 @@ When the instance has no saved log, start admission creates the validated per-us
 
 ## Missions
 
-Missions are `.pbo` uploads stored under `missions/`. The current serializer validates a safe basename and extension, and replaces an existing record with the same stored path. There is no uploader relation or version history. Mission upload/replacement behavior is unchanged and outside Task 9 remediation; the `Missions.mission_file` storage is enumerated only when checking private-root overlap.
+Missions are `.pbo` uploads stored under `missions/`. The serializer validates a safe basename and extension, and replaces an existing record with the same stored path. There is no uploader relation or version history. Staff deletion checks `is_running` under the lifecycle mutex and uses the managed-file journal for a validated, unshared local file; a missing file permits removal of the record. The operation uses the existing private sibling and can report cleanup pending. Upload/replacement behavior is unchanged.

@@ -804,6 +804,38 @@ def delete_instance_logs(
         raise InstanceOperationError() from None
 
 
+def delete_mission(*, mission_id: int, config_snapshot: Mapping[str, Any]):
+    """Remove one mission under the lifecycle mutex and managed-file journal."""
+    require_lifecycle_autocommit()
+    journal = None
+    with ExitStack() as stack:
+        with lifecycle_transaction():
+            if Instances.objects.filter(is_running=True).exists():
+                raise InstanceBusyError()
+            mission = Missions.objects.select_for_update().filter(pk=mission_id).first()
+            if mission is None:
+                raise InstanceNotFoundError()
+            name = _validate_relative_name(mission.mission_file.name)
+            if len(name.split('/')) != 2 or not name.startswith('missions/'):
+                raise UnsafeManagedPathError()
+            media_root = _media_root()
+            storage = mission.mission_file.storage
+            if not isinstance(storage, FileSystemStorage) or _absolute_path(storage.location) != media_root:
+                raise UnsafeManagedPathError()
+            if Missions.objects.exclude(pk=mission.pk).filter(mission_file=name).exists():
+                raise UnsafeManagedPathError()
+            exists = _validate_existing_file(media_root, name, allow_missing=True)
+            if exists:
+                roots = _managed_roots(config_snapshot, media_prefixes=('missions/',), arma_names=())
+                journal = stack.enter_context(ManagedFileJournal(roots))
+                journal.remove('media', name)
+                journal.publish()
+            Missions.objects.filter(pk=mission.pk).delete()
+            if journal is not None:
+                transaction.on_commit(journal.mark_committed)
+        return journal.finalize() if journal is not None else None
+
+
 def _managed_roots(
     config_snapshot: Mapping[str, Any],
     *,

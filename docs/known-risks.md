@@ -40,7 +40,7 @@ Operation logs have no automatic retention or rotation and may contain operation
 
 Incremental log polling cannot reliably detect a same-file truncate-and-regrow operation that completes between polls and grows beyond the previous cursor.
 
-The generated known administrator password finding remains intentionally excluded by the user design. Mission behavior remains outside this remediation scope.
+The generated known administrator password finding remains intentionally excluded by the user design. Mission upload replacement remains outside this remediation scope.
 
 ## Validation limits
 
