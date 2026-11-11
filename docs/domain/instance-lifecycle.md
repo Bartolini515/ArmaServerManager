@@ -1,5 +1,7 @@
 # Instance lifecycle
 
+The instance log viewer uses bounded cursor-based polling while auto-refresh is enabled; its settings are stored in the browser. The existing complete-log download remains separate.
+
 This lifecycle contract reflects the accepted source at commit 9da951f and guarded regression evidence (2026-11-09).
 
 An instance is a logical Arma 3 server plus its managed files, reserved port, asynchronous tasks, and a verified host-process run. Database flags alone do not prove that a host process is alive or safe to signal.

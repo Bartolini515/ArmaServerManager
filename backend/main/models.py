@@ -172,6 +172,12 @@ class Ports(models.Model):
     def __str__(self):
         return f"{self.port_number}"
     
+class PreparedPreset(models.Model):
+    name = models.CharField(max_length=255)
+    name_key = models.CharField(max_length=255, unique=True, editable=False)
+    preset_file = models.FileField(upload_to='prepared_presets/', max_length=255, unique=True)
+
+
 class Missions(models.Model):
     mission_file = models.FileField(upload_to='missions/')
     

@@ -171,6 +171,23 @@ class InstanceSerializer(serializers.ModelSerializer):
         )
         
 # MissionsSerializers
+class PreparedPresetSerializer(serializers.ModelSerializer):
+    def validate_preset_file(self, value):
+        return InstanceSerializer().validate_preset(value)
+
+    def validate_name(self, value):
+        value = value.strip()
+        if not value or len(value.casefold()) > 255:
+            raise serializers.ValidationError('Nieprawidłowa nazwa paczki.')
+        if PreparedPreset.objects.filter(name_key=value.casefold()).exists():
+            raise serializers.ValidationError('Nazwa paczki już istnieje.')
+        return value
+
+    class Meta:
+        model = PreparedPreset
+        fields = ('id', 'name', 'preset_file')
+
+
 class MissionSerializer(serializers.ModelSerializer):
     def validate_mission_file(self, value):
         filename = value.name if hasattr(value, 'name') else str(value)
@@ -183,25 +200,6 @@ class MissionSerializer(serializers.ModelSerializer):
         if not filename.endswith('.pbo'):
             raise serializers.ValidationError("Plik misji musi mieć rozszerzenie .pbo")
         return value
-    
-    def create(self, validated_data):
-        """
-        Create a mission, replacing an existing record with the same stored filename.
-
-        The replacement removes the old model and file before saving the new upload;
-        this is intentionally not a versioned mission history.
-        """
-        mission_file = validated_data['mission_file']
-        
-        mission_path = os.path.join(
-            self.Meta.model.mission_file.field.upload_to, 
-            os.path.basename(mission_file.name)
-        )
-        
-        if existing_mission := self.Meta.model.objects.filter(mission_file=mission_path).first():
-            existing_mission.delete() 
-            
-        return self.Meta.model.objects.create(**validated_data)
     
     class Meta:
         model = Missions

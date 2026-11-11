@@ -12,10 +12,12 @@ from .models import *
 from django.contrib.auth import get_user_model, authenticate
 from django.utils import timezone
 from django.core.files.base import ContentFile
+from django.core import signing
+import codecs
 from knox.models import AuthToken
 import psutil
 import platform
-from django.db import DatabaseError, transaction
+from django.db import DatabaseError, IntegrityError, transaction
 from uuid import uuid4
 from .modpreset.modpathing import check_installed
 from .modpreset.preset_extraction import preset_parser
@@ -56,6 +58,12 @@ from .instance_management import (
     create_instance,
     delete_instance,
     delete_instance_logs,
+    delete_mission,
+    create_prepared_preset,
+    delete_prepared_preset,
+    copy_prepared_preset,
+    upload_mission,
+    MissionReplacementForbidden,
     delete_profile,
     open_validated_file,
     preflight_managed_root_layout,
@@ -66,6 +74,28 @@ from .instance_management import (
     validate_instance_start_file,
 )
 User = get_user_model()
+
+
+def _preset_request_data(request):
+    upload = request.FILES.get('preset')
+    preset_id = request.data.get('prepared_preset_id')
+    if upload and preset_id:
+        return None, None, Response({'preset': ['Wybierz tylko jedno źródło presetu.']}, status=400)
+    data = request.data.copy()
+    data.pop('prepared_preset_id', None)
+    if preset_id:
+        try:
+            identifier = int(preset_id)
+            if identifier <= 0:
+                raise ValueError
+            captured = copy_prepared_preset(identifier)
+        except (ValueError, TypeError, InstanceNotFoundError):
+            return None, None, Response({'preset': ['Przygotowana paczka nie istnieje.']}, status=400)
+        except (ManagedFileError, OSError):
+            return None, None, _managed_path_error('Plik paczki wymaga weryfikacji przez administratora.')
+        data['preset'] = captured
+        return data, captured, None
+    return data, None, None
 
 
 class InstanceLifecycleBusy(RuntimeError):
@@ -371,8 +401,18 @@ class InstancesViewset(viewsets.ModelViewSet):
 
     def create(self, request):
         """Validate an upload, then publish the instance and its managed files together."""
+        data, captured, error = _preset_request_data(request)
+        if error:
+            return error
+        try:
+            return self._create_with_data(request, data)
+        finally:
+            if captured:
+                captured.close()
+
+    def _create_with_data(self, request, data):
         user = self.request.user
-        serializer = self.serializer_class(data=request.data)
+        serializer = self.serializer_class(data=data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
 
@@ -793,6 +833,16 @@ class InstancesViewset(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="admin_instance/change_preset", permission_classes=[permissions.IsAdminUser])
     def change_preset(self, request, pk=None):
+        data, captured, error = _preset_request_data(request)
+        if error:
+            return error
+        try:
+            return self._change_preset_with_data(request, pk, data)
+        finally:
+            if captured:
+                captured.close()
+
+    def _change_preset_with_data(self, request, pk, data):
         try:
             instance = self._get_authorized_instance(pk)
         except Http404:
@@ -805,7 +855,7 @@ class InstancesViewset(viewsets.ModelViewSet):
         if not instance.is_admin_instance:
             return Response({"message": "To nie jest instancja administracyjna."}, status=400)
 
-        serializer = self.serializer_class(instance, data=request.data, partial=True)
+        serializer = self.serializer_class(instance, data=data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
         if "preset" not in serializer.validated_data:
@@ -1104,6 +1154,49 @@ class InstancesViewset(viewsets.ModelViewSet):
             return _operation_error("Nie udało się odczytać pliku logu.")
         return Response(content, content_type="text/plain", status=200)
 
+    @action(detail=True, methods=['get'], url_path='logs/incremental')
+    def incremental_logs(self, request, pk=None):
+        instance = self._get_authorized_instance(pk)
+        try:
+            tail = int(request.query_params.get('tail', 2000))
+            if tail not in (100, 500, 1000, 2000):
+                raise ValueError
+            token = request.query_params.get('cursor')
+            cursor = signing.loads(token, salt='instance-log') if token else None
+            if cursor and (cursor['instance'] != instance.pk or cursor['offset'] < 0):
+                raise ValueError
+        except (ValueError, KeyError, TypeError, signing.BadSignature):
+            return Response({'message': 'Nieprawidłowy kursor logu.'}, status=400)
+        try:
+            path = validate_instance_log_file(instance)
+            if not path:
+                return Response({'message': 'Brak logów lub plik nie istnieje.'}, status=404)
+            with open_validated_file(path) as log:
+                info = os.fstat(log.fileno())
+                identity = [info.st_dev, info.st_ino]
+                reset = bool(cursor and (cursor['identity'] != identity or cursor['offset'] > info.st_size))
+                initial = cursor is None or reset
+                start = max(0, info.st_size - 262144) if initial else cursor['offset']
+                log.seek(start)
+                data = log.read(262144 if initial else 65536)
+                decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+                content = decoder.decode(data, final=False)
+                pending, _ = decoder.getstate()
+                offset = start + len(data) - len(pending)
+                truncated = initial and start > 0
+                if initial:
+                    lines = content.splitlines(keepends=True)
+                    if len(lines) > tail:
+                        content = ''.join(lines[-tail:])
+                next_cursor = signing.dumps({'instance': instance.pk, 'identity': identity, 'offset': offset}, salt='instance-log')
+                return Response({'content': content, 'cursor': next_cursor, 'reset': reset, 'truncated': truncated, 'has_more': offset < info.st_size - len(pending)})
+        except (ManagedFileMissingError, FileNotFoundError):
+            return Response({'message': 'Brak logów lub plik nie istnieje.'}, status=404)
+        except UnsafeManagedPathError:
+            return _managed_path_error('Plik logu wymaga weryfikacji przez administratora.')
+        except (ManagedFileError, OSError):
+            return _operation_error('Nie udało się odczytać pliku logu.')
+
     @action(detail=True, methods=['get'], url_path='logs/download')
     def download_logs(self, request, pk=None):
         try:
@@ -1167,16 +1260,82 @@ class InstancesViewset(viewsets.ModelViewSet):
             return _operation_error("Nie udało się usunąć logów.")
         return _delete_response(result, "Logi zostały usunięte")
     
+class PreparedPresetViewset(viewsets.GenericViewSet):
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = PreparedPreset.objects.all().order_by('name', 'id')
+    serializer_class = PreparedPresetSerializer
+
+    def list(self, request):
+        return Response(self.serializer_class(self.get_queryset(), many=True).data)
+
+    def create(self, request):
+        if not request.user.is_staff:
+            return Response({'message': 'Brak uprawnień.'}, status=403)
+        serializer = self.serializer_class(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            record, pending = create_prepared_preset(name=serializer.validated_data['name'], upload=serializer.validated_data['preset_file'], config_snapshot=config.snapshot())
+        except IntegrityError:
+            return Response({'name': ['Nazwa paczki już istnieje.']}, status=400)
+        except ManagedFileError:
+            return _operation_error('Nie udało się bezpiecznie zapisać paczki.')
+        payload = dict(self.serializer_class(record).data)
+        if pending:
+            payload['cleanup_pending'] = True
+        return Response(payload, status=201)
+
+    def destroy(self, request, pk=None):
+        if not request.user.is_staff:
+            return Response({'message': 'Brak uprawnień.'}, status=403)
+        try:
+            pending = delete_prepared_preset(preset_id=pk, config_snapshot=config.snapshot())
+        except InstanceNotFoundError:
+            return Response({'message': 'Paczka nie istnieje.'}, status=404)
+        except ManagedFileError:
+            return _operation_error('Nie udało się bezpiecznie usunąć paczki.')
+        if pending:
+            return Response({'message': 'Paczka usunięta; czyszczenie wymaga uwagi administratora.', 'cleanup_pending': True})
+        return Response(status=204)
+
+
 class MissionsViewset(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
     queryset = Missions.objects.all()
     serializer_class = MissionSerializer
+
+    def destroy(self, request, pk=None):
+        if not request.user.is_staff:
+            return Response({'message': 'Brak uprawnień.'}, status=403)
+        try:
+            pending = delete_mission(mission_id=pk, config_snapshot=config.snapshot())
+        except InstanceBusyError:
+            return Response({'message': 'Nie można usunąć misji, gdy jakakolwiek instancja działa.'}, status=409)
+        except InstanceNotFoundError:
+            return Response({'message': 'Misja nie została znaleziona.'}, status=404)
+        except UnsafeManagedPathError:
+            return Response({'message': 'Plik misji wymaga weryfikacji przez administratora.'}, status=400)
+        except (ManagedFileError, OSError, DatabaseError):
+            return _operation_error('Nie udało się bezpiecznie usunąć misji.')
+        if pending:
+            return Response({'message': 'Misja usunięta; czyszczenie wymaga uwagi administratora.', 'cleanup_pending': True}, status=200)
+        return Response(status=204)
     
     def create(self, request):
         serializer = self.serializer_class(data=request.data)
         if serializer.is_valid():
-            
-            mission = serializer.save()
-            return message_response(self.serializer_class(mission).data, "Misja została wgrana")
+            try:
+                mission, pending = upload_mission(upload=serializer.validated_data['mission_file'], is_staff=request.user.is_staff, config_snapshot=config.snapshot())
+            except MissionReplacementForbidden:
+                return Response({'message': 'Tylko administrator może zastąpić istniejącą misję.'}, status=403)
+            except InstanceBusyError:
+                return Response({'message': 'Nie można zastąpić misji, gdy jakakolwiek instancja działa.'}, status=409)
+            except (ManagedFileError, OSError, DatabaseError):
+                return _operation_error('Nie udało się bezpiecznie wgrać misji.')
+            response = message_response(self.serializer_class(mission).data, "Misja została wgrana")
+            if pending:
+                response.data['message'] = 'Misja wgrana; czyszczenie wymaga uwagi administratora.'
+                response.data['cleanup_pending'] = True
+            return response
         else:
             return Response(serializer.errors, status=400)

@@ -1,5 +1,9 @@
 # Troubleshooting
 
+## Incremental instance logs
+
+If automatic refresh reports a connection error, check access to the instance and retry while the log dialog is open. The viewer retries while enabled and resets its cursor after detected file replacement or truncation. It limits the visible tail; download the full log when older entries are needed. Same-file truncation and regrowth past the previous cursor between polls may not be detectable.
+
 This is an operator-safe diagnostic guide. It does not authorize process termination, cache edits, workspace deletion, database repair, or production cleanup.
 
 ## Start with the source of truth
@@ -44,4 +48,4 @@ The instance log is separate from application operation logs. Check the authoriz
 
 ## Mission replacement is unexpected
 
-Uploading a `.pbo` with the same stored filename replaces the existing mission. There is no version history or uploader relation. Mission behavior is outside the Task 9 remediation scope.
+Uploading a `.pbo` with the same stored filename replaces the existing mission only for staff and when no instance has `is_running=true`. There is no version history or uploader relation.

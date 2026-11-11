@@ -50,7 +50,11 @@ Contains a unique integer `port_number` and an `is_available` flag. Creation res
 
 ### `Missions`
 
-Stores an uploaded `mission_file` under `missions/`. The current serializer replaces an existing mission with the same stored filename before creating the new record. There is no uploader relation or version history. Mission behavior remains outside this remediation scope.
+Stores an uploaded `mission_file` under `missions/`. Same-filename replacement requires staff and no running instances. There is no uploader relation or version history. Deletion and replacement use a managed file journal and reject unsafe or shared file references.
+
+### `PreparedPreset`
+
+Stores a display name, unique case-folded name key, and a unique file reference below `prepared_presets/`. Instances own separate copies; deleting a catalog entry does not delete instance presets.
 
 ## Relationship summary
 

@@ -45,7 +45,7 @@ Staff UI sections are displayed as main instances, the staff member's own instan
 | Method | Path | Access | Behavior |
 | --- | --- | --- | --- |
 | GET | `/api/instances/` | Authenticated | Returns the three instance arrays described above. |
-| POST | `/api/instances/` | Authenticated | Accepts `name` and a preset upload; the serializer does not require a filename extension. Ordinary users are limited to five instances. Creation uses the managed-file journal and shared lifecycle transaction. Precommit failures trigger compensation; clean rollback is reported only when restoration/removal is verified, while uncertain rollback may leave repair evidence. Postcommit private cleanup failure is reported as cleanup-pending. |
+| POST | `/api/instances/` | Authenticated | Accepts `name` and exactly one preset upload or `prepared_preset_id`; the serializer does not require a filename extension. Ordinary users are limited to five instances. Creation uses the managed-file journal and shared lifecycle transaction. Precommit failures trigger compensation; clean rollback is reported only when restoration/removal is verified, while uncertain rollback may leave repair evidence. Postcommit private cleanup failure is reported as cleanup-pending. |
 | GET | `/api/instances/<id>/` | Owner or staff | Reads one authorized instance. |
 | DELETE | `/api/instances/<id>/` | Owner or staff | Deletes a stopped instance and its managed files and port. Deletes only stopped/safe instances through the journal; validates owned paths, preserves per-user config, and releases the port on the guarded service path. |
 | POST | `/api/instances/<id>/start/` | Owner or staff | Reserves a lifecycle run and enqueues start work with only `instance_id` and `run_id`; returns `202 {task_id}`. Repeated start while the same run is starting returns its task ID. |
@@ -53,9 +53,10 @@ Staff UI sections are displayed as main instances, the staff member's own instan
 | POST | `/api/instances/<id>/download_mods/` | Owner or staff | Reuses an unfinished same-instance download with HTTP 202 and its string `task_id`. A conflicting global download or active operation returns a static HTTP 409. A new admission runs config/preset/disk preflight under the lifecycle mutex before creating its durable task binding; successful dispatch returns HTTP 202 `{task_id}`. |
 | GET | `/api/instances/task_status/<task_id>/` | Bound owner or staff | Returns `{id, state, result}`; non-staff access requires a persisted task-to-instance binding for an owned non-administrative instance. Unknown or unowned task IDs return 404. Superseded tasks return static `REVOKED`; persisted attention returns static, nonterminal `REQUIRES_ATTENTION`. |
 | GET | `/api/instances/<id>/logs/` | Owner or staff | Returns log text; optional `tail` limits the returned lines. |
+| GET | `/api/instances/<id>/logs/incremental/` | Owner or staff | Returns a bounded log tail or newly appended content with a signed cursor; reports reset, truncation, and remaining data. |
 | GET | `/api/instances/<id>/logs/download/` | Owner or staff | Downloads the complete log. |
 | DELETE | `/api/instances/<id>/logs/delete/` | Owner or staff | Deletes a log only when the instance is not busy. |
-| POST | `/api/instances/<id>/admin_instance/change_preset/` | Staff | Replaces the preset of a stopped administrative instance. Requires an uploaded preset before side effects; stages and validates replacement files. Prior files and metadata are restored only when precommit compensation succeeds and verifies the restoration; uncertain rollback may leave paths or private evidence for operator review. |
+| POST | `/api/instances/<id>/admin_instance/change_preset/` | Staff | Replaces the preset of a stopped administrative instance using exactly one uploaded preset or `prepared_preset_id`; stages and validates replacement files. Prior files and metadata are restored only when precommit compensation succeeds and verifies the restoration; uncertain rollback may leave paths or private evidence for operator review. |
 
 The instance serializer validates names as ASCII letters, digits, underscores, and hyphens; preset filenames permit ASCII letters, digits, underscores, dots, and hyphens, with no extension requirement. Workshop-ID parsing runs only for the exact lowercase `.html` suffix; other accepted filenames produce no Workshop IDs. See Managed file behavior below.
 
@@ -69,7 +70,7 @@ The status endpoint authorizes its persisted binding before reading Celery. Supe
 
 ## Managed file behavior
 
-The accepted storage service validates preset, start-script, and log references against the current configuration snapshot, expected per-user path leaves, local FileField storage paths, and regular-file/symlink checks. Create, preset replacement, and first-start admission perform a read-only `preflight_managed_root_layout(config_snapshot)` before opening operation loggers, using the same snapshot as the operation and logger. It compares the derived private siblings with configured, static, media, instance preset/log, and mission-upload storage roots. The public-root enumeration includes `Missions.mission_file`; unsupported/non-enumerable FileField storage fails closed for mutations that rely on private staging. Mission upload/replacement behavior itself is unchanged.
+The accepted storage service validates preset, start-script, and log references against the current configuration snapshot, expected per-user path leaves, local FileField storage paths, and regular-file/symlink checks. Create, preset replacement, and first-start admission perform a read-only `preflight_managed_root_layout(config_snapshot)` before opening operation loggers, using the same snapshot as the operation and logger. It compares the derived private siblings with configured, static, media, instance preset/log, mission and prepared-preset storage roots. Unsupported or non-enumerable FileField storage fails closed for mutations that rely on private staging.
 
 Creation stages the uploaded preset and generated configuration/start files, then publishes them with database state and port reservation under the lifecycle transaction. Precommit failures trigger compensation; clean restoration/removal is established only when compensation succeeds and verifies it. A failed or uncertain restore, destination cleanup, or private-stage cleanup can raise `ManagedFileRollbackError` and leave unresolved public paths or private stage/backup evidence, retained for repair where available. Preset replacement preserves the previous file/readiness/metadata only after verified successful compensation. User deletion preflights every owned instance and file, rejects busy or unknown work without autostopping, releases ports only after the guarded cleanup path, and deletes a profile configuration only when no other row references it. Instance deletion retains that per-user configuration.
 
@@ -95,6 +96,11 @@ The staff configuration response masks only non-empty `steam_auth.password` and 
 
 | Method | Path | Access | Behavior |
 | --- | --- | --- | --- |
-| POST | `/api/missions/` | Authenticated | Accepts one `.pbo` upload; a same-stored-filename mission is replaced. |
+| POST | `/api/missions/` | Authenticated | Accepts one `.pbo` upload. Replacing a same-filename mission requires staff and no instance with `is_running=true`; replacement uses the managed-file journal. |
+| DELETE | `/api/missions/<id>/` | Staff | Removes the mission and managed file; returns 409 while any instance has `is_running=true`. A missing file does not prevent deletion; unsafe references are rejected. Private cleanup failure is reported. |
 
-Missions do not have an uploader relation or version history in the current model. Mission behavior is outside the Task 9 remediation scope.
+Missions do not have an uploader relation or version history. Replacing an existing mission is treated as deletion for permission and running-instance checks. Generic `PUT` and `PATCH` are disabled.
+
+## Prepared presets
+
+`GET /api/prepared-presets/` lists the shared catalog for authenticated users. Staff can submit multipart `name` and `preset_file` to `POST /api/prepared-presets/` and delete a catalog entry with `DELETE /api/prepared-presets/<id>/`. Display names are unique after case folding; conflicting file names receive distinct stored names. Selecting a prepared preset captures a separate copy for the instance. Removing an entry leaves existing copies unchanged. File writes and removals use the managed-file journal and may report private cleanup pending.

@@ -7,6 +7,8 @@ import logging
 import re
 import stat
 import uuid
+import tempfile
+from django.core.files import File
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +30,7 @@ from .instance_lifecycle import (
     lifecycle_transaction,
     require_lifecycle_autocommit,
 )
-from .models import Instances, Missions, Ports, Profile
+from .models import Instances, Missions, Ports, Profile, PreparedPreset
 from .modpreset.preset_extraction import preset_parser
 from .modpreset.start_files import generate_server_config, generate_sh_file
 
@@ -72,6 +74,10 @@ class ProfileBusyError(InstanceManagementError):
     code = "profile_instances_busy"
     message = "The profile has an instance with an active lifecycle operation."
     status_code = 400
+
+
+class MissionReplacementForbidden(InstanceManagementError):
+    status_code = 403
 
 
 class InstanceLimitExceeded(InstanceManagementError):
@@ -804,6 +810,161 @@ def delete_instance_logs(
         raise InstanceOperationError() from None
 
 
+def _prepared_file_path(record: PreparedPreset, *, allow_missing: bool):
+    name = _validate_relative_name(record.preset_file.name)
+    if len(name.split('/')) != 2 or not name.startswith('prepared_presets/'):
+        raise UnsafeManagedPathError()
+    root = _media_root()
+    storage = record.preset_file.storage
+    if not isinstance(storage, FileSystemStorage) or _absolute_path(storage.location) != root:
+        raise UnsafeManagedPathError()
+    exists = _validate_existing_file(root, name, allow_missing=allow_missing)
+    return root, name, exists
+
+
+def create_prepared_preset(*, name, upload, config_snapshot):
+    filename = _validate_upload_leaf(upload.name)
+    require_lifecycle_autocommit()
+    with ExitStack() as stack:
+        with lifecycle_transaction():
+            root = _media_root()
+            roots = _managed_roots(config_snapshot, media_prefixes=('prepared_presets/',), arma_names=())
+            _ensure_managed_parent(root, 'prepared_presets/' + filename)
+            field = PreparedPreset._meta.get_field('preset_file')
+            initial_name = 'prepared_presets/' + filename
+            for _attempt in range(16):
+                candidate = field.storage.get_available_name(initial_name, max_length=field.max_length).replace('\\', '/')
+                candidate = _validate_relative_name(candidate)
+                if len(candidate.split('/')) != 2 or not candidate.startswith('prepared_presets/'):
+                    raise UnsafeManagedPathError()
+                if not PreparedPreset.objects.filter(preset_file=candidate).exists():
+                    break
+                stem, suffix = os.path.splitext(filename)
+                initial_name = f'prepared_presets/{stem}_{uuid.uuid4().hex[:8]}{suffix}'
+            else:
+                raise ManagedFileError()
+            journal = stack.enter_context(ManagedFileJournal(roots))
+            def write(stage):
+                with open(stage, 'wb') as destination:
+                    for chunk in upload.chunks():
+                        destination.write(chunk)
+            journal.stage('media', candidate, write)
+            journal.publish()
+            record = PreparedPreset.objects.create(name=name, name_key=name.casefold(), preset_file=candidate)
+            transaction.on_commit(journal.mark_committed)
+        pending = journal.finalize()
+        return record, pending
+
+
+def delete_prepared_preset(*, preset_id, config_snapshot):
+    require_lifecycle_autocommit()
+    journal = None
+    with ExitStack() as stack:
+        with lifecycle_transaction():
+            record = PreparedPreset.objects.select_for_update().filter(pk=preset_id).first()
+            if record is None:
+                raise InstanceNotFoundError()
+            _, name, exists = _prepared_file_path(record, allow_missing=True)
+            if exists:
+                roots = _managed_roots(config_snapshot, media_prefixes=('prepared_presets/',), arma_names=())
+                journal = stack.enter_context(ManagedFileJournal(roots))
+                journal.remove('media', name)
+                journal.publish()
+            record.delete()
+            if journal is not None:
+                transaction.on_commit(journal.mark_committed)
+        return journal.finalize() if journal is not None else None
+
+
+def copy_prepared_preset(preset_id):
+    """Capture an independent temporary upload while catalog deletion is excluded."""
+    require_lifecycle_autocommit()
+    with lifecycle_transaction():
+        record = PreparedPreset.objects.select_for_update().filter(pk=preset_id).first()
+        if record is None:
+            raise InstanceNotFoundError()
+        root, name, _ = _prepared_file_path(record, allow_missing=False)
+        temporary = tempfile.SpooledTemporaryFile(max_size=1024 * 1024, mode='w+b')
+        try:
+            with open_validated_file(root / name) as source:
+                while chunk := source.read(65536):
+                    temporary.write(chunk)
+            temporary.seek(0)
+            return File(temporary, name=name.rsplit('/', 1)[-1])
+        except BaseException:
+            temporary.close()
+            raise
+
+
+def upload_mission(*, upload, is_staff, config_snapshot):
+    """Serialize uploads with guarded replacement and lifecycle decisions."""
+    filename = _validate_upload_leaf(upload.name)
+    relative = 'missions/' + filename
+    require_lifecycle_autocommit()
+    journal = None
+    with ExitStack() as stack:
+        with lifecycle_transaction():
+            previous = Missions.objects.select_for_update().filter(mission_file=relative).first()
+            if previous is None:
+                return Missions.objects.create(mission_file=upload), None
+            if not is_staff:
+                raise MissionReplacementForbidden()
+            if Instances.objects.filter(is_running=True).exists():
+                raise InstanceBusyError()
+            root = _media_root()
+            storage = previous.mission_file.storage
+            if not isinstance(storage, FileSystemStorage) or _absolute_path(storage.location) != root:
+                raise UnsafeManagedPathError()
+            if Missions.objects.exclude(pk=previous.pk).filter(mission_file=relative).exists():
+                raise UnsafeManagedPathError()
+            exists = _validate_existing_file(root, relative, allow_missing=True)
+            roots = _managed_roots(config_snapshot, media_prefixes=('missions/',), arma_names=())
+            _ensure_managed_parent(root, relative)
+            journal = stack.enter_context(ManagedFileJournal(roots))
+            def write(stage):
+                with open(stage, 'wb') as destination:
+                    for chunk in upload.chunks():
+                        destination.write(chunk)
+            journal.stage('media', relative, write, replace=exists)
+            journal.publish()
+            Missions.objects.filter(pk=previous.pk).delete()
+            mission = Missions.objects.create(mission_file=relative)
+            transaction.on_commit(journal.mark_committed)
+        return mission, journal.finalize()
+
+
+def delete_mission(*, mission_id: int, config_snapshot: Mapping[str, Any]):
+    """Remove one mission under the lifecycle mutex and managed-file journal."""
+    require_lifecycle_autocommit()
+    journal = None
+    with ExitStack() as stack:
+        with lifecycle_transaction():
+            if Instances.objects.filter(is_running=True).exists():
+                raise InstanceBusyError()
+            mission = Missions.objects.select_for_update().filter(pk=mission_id).first()
+            if mission is None:
+                raise InstanceNotFoundError()
+            name = _validate_relative_name(mission.mission_file.name)
+            if len(name.split('/')) != 2 or not name.startswith('missions/'):
+                raise UnsafeManagedPathError()
+            media_root = _media_root()
+            storage = mission.mission_file.storage
+            if not isinstance(storage, FileSystemStorage) or _absolute_path(storage.location) != media_root:
+                raise UnsafeManagedPathError()
+            if Missions.objects.exclude(pk=mission.pk).filter(mission_file=name).exists():
+                raise UnsafeManagedPathError()
+            exists = _validate_existing_file(media_root, name, allow_missing=True)
+            if exists:
+                roots = _managed_roots(config_snapshot, media_prefixes=('missions/',), arma_names=())
+                journal = stack.enter_context(ManagedFileJournal(roots))
+                journal.remove('media', name)
+                journal.publish()
+            Missions.objects.filter(pk=mission.pk).delete()
+            if journal is not None:
+                transaction.on_commit(journal.mark_committed)
+        return journal.finalize() if journal is not None else None
+
+
 def _managed_roots(
     config_snapshot: Mapping[str, Any],
     *,
@@ -863,6 +1024,7 @@ def _public_roots(
         (Instances, "preset"),
         (Instances, "log_file"),
         (Missions, "mission_file"),
+        (PreparedPreset, "preset_file"),
     ):
         try:
             storage = model._meta.get_field(field_name).storage

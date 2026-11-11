@@ -9,6 +9,7 @@ router.register('services', ServicesViewset, basename='services')
 router.register('instances', InstancesViewset, basename='instances')
 router.register('moderator_panel', ModeratorPanelViewset, basename='moderator_panel')
 router.register('missions', MissionsViewset, basename='missions')
+router.register('prepared-presets', PreparedPresetViewset, basename='prepared-presets')
 urlpatterns = router.urls
 if not settings.DEBUG:
     urlpatterns = [url for url in urlpatterns if url.name != 'api-root']

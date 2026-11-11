@@ -8,6 +8,8 @@ import CloseIcon from "@mui/icons-material/Close";
 import { useForm } from "react-hook-form";
 import { useAlert } from "../../../contexts/AlertContext";
 import MyDropzone from "../../../UI/forms/MyDropzone";
+import { useState } from "react";
+import PreparedPresetSelect from "./PreparedPresetSelect";
 import {
 	getApiErrorData,
 	getApiErrorMessage,
@@ -42,6 +44,7 @@ interface FormData {
 }
 
 export default function ChangePresetModal(props: Props) {
+	const [preparedId, setPreparedId] = useState<number | "">("");
 	const { handleSubmit, control, setError, clearErrors, setValue } =
 		useForm<FormData>({
 			defaultValues: {
@@ -52,9 +55,12 @@ export default function ChangePresetModal(props: Props) {
 	const { setAlert } = useAlert();
 
 	const submission = (data: FormData) => {
+		const payload = new window.FormData();
+		if (preparedId !== "") payload.append("prepared_preset_id", String(preparedId));
+		else if (data.preset) payload.append("preset", data.preset);
 		AxiosInstance.post(
 			`instances/${props.selectedAdminInstanceId}/admin_instance/change_preset/`,
-			data,
+			payload,
 			{
 				headers: {
 					"Content-Type": "multipart/form-data",
@@ -127,8 +133,9 @@ export default function ChangePresetModal(props: Props) {
 						>
 							<CloseIcon sx={{ color: "red" }} fontSize="medium" />
 						</Button>
-						<form>
-							<MyDropzone
+						<form onSubmit={handleSubmit(submission)}>
+							<PreparedPresetSelect value={preparedId} onChange={setPreparedId} />
+							{preparedId === "" ? <MyDropzone
 								label={"Prześlij preset"}
 								name={"preset"}
 								control={control}
@@ -152,7 +159,7 @@ export default function ChangePresetModal(props: Props) {
 									justifyContent: "center",
 									alignItems: "center",
 								}}
-							></MyDropzone>
+							></MyDropzone> : <Button type="submit" variant="contained">Zmień preset</Button>}
 						</form>
 					</Box>
 				</Fade>

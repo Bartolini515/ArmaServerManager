@@ -13,7 +13,7 @@ from django.test import TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 
 from main.instance_tasks import create_instance_task_binding
-from main.models import InstanceTask, Instances, Ports
+from main.models import InstanceTask, Instances, Ports, PreparedPreset
 from main.tasks import start_server_task, stop_server_task
 
 
@@ -563,3 +563,100 @@ class InstancePermissionTests(TransactionTestCase):
         )
         self.assertEqual(response.data["result"]["user"]["username"], "owner")
         self.assertEqual(response.data["result"]["port"], str(available_port.port_number))
+
+    def test_incremental_log_returns_only_new_bytes(self):
+        instance = self.make_instance(with_log=True)
+        self.client.force_authenticate(self.owner)
+        url = f"/api/instances/{instance.pk}/logs/incremental/"
+        initial = self.client.get(url, {"tail": 100})
+        self.assertEqual(initial.status_code, 200)
+        self.assertEqual(initial.data["content"], "invented log line\n")
+        with open(instance.log_file.path, "ab") as log:
+            log.write(b"new line\n")
+        updated = self.client.get(url, {"cursor": initial.data["cursor"]})
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.data["content"], "new line\n")
+
+    def test_incremental_log_resets_after_truncation(self):
+        instance = self.make_instance(with_log=True)
+        self.client.force_authenticate(self.owner)
+        url = f"/api/instances/{instance.pk}/logs/incremental/"
+        initial = self.client.get(url)
+        with open(instance.log_file.path, "wb") as log:
+            log.write(b"new\n")
+        updated = self.client.get(url, {"cursor": initial.data["cursor"]})
+        self.assertTrue(updated.data["reset"])
+        self.assertEqual(updated.data["content"], "new\n")
+
+    def test_incremental_log_waits_for_complete_utf8_character(self):
+        instance = self.make_instance(with_log=True)
+        self.client.force_authenticate(self.owner)
+        url = f"/api/instances/{instance.pk}/logs/incremental/"
+        initial = self.client.get(url)
+        with open(instance.log_file.path, "ab") as log:
+            log.write(b"\xc5")
+        partial = self.client.get(url, {"cursor": initial.data["cursor"]})
+        self.assertEqual(partial.data["content"], "")
+        with open(instance.log_file.path, "ab") as log:
+            log.write(b"\x82")
+        complete = self.client.get(url, {"cursor": partial.data["cursor"]})
+        self.assertEqual(complete.data["content"], "ł")
+
+    def test_create_with_prepared_preset_copies_content(self):
+        prepared = PreparedPreset.objects.create(name='Paczka', name_key='paczka', preset_file=SimpleUploadedFile('mods.html', b'<html>fixture</html>'))
+        Ports.objects.create(port_number=self.next_port, is_available=True)
+        self.authenticate_as(self.owner)
+        @contextmanager
+        def fake_loggers(*args, **kwargs):
+            yield {'create': MagicMock()}
+        with self.parser_context(return_value=[]), patch('main.views.operation_loggers', side_effect=fake_loggers):
+            response = self.client.post('/api/instances/', {'name': 'prepared-instance', 'prepared_preset_id': prepared.pk}, format='multipart')
+        self.assertEqual(response.status_code, 200, response.data)
+        instance = Instances.objects.get(name='prepared-instance')
+        self.assertNotEqual(instance.preset.name, prepared.preset_file.name)
+        self.assertEqual(Path(instance.preset.path).read_bytes(), b'<html>fixture</html>')
+        self.assertEqual(Path(prepared.preset_file.path).read_bytes(), b'<html>fixture</html>')
+
+    def test_create_rejects_both_preset_sources(self):
+        prepared = PreparedPreset.objects.create(name='Paczka', name_key='paczka', preset_file=SimpleUploadedFile('mods.html', b'fixture'))
+        self.authenticate_as(self.owner)
+        response = self.client.post('/api/instances/', {'name': 'fixture', 'prepared_preset_id': prepared.pk, 'preset': SimpleUploadedFile('custom.html', b'fixture')}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+
+    def test_admin_change_to_prepared_preset_copies_content(self):
+        prepared = PreparedPreset.objects.create(name='Paczka', name_key='paczka', preset_file=SimpleUploadedFile('mods.html', b'<html>fixture</html>'))
+        instance = self.make_instance(self.superuser, name='admin-prepared', is_admin_instance=True)
+        self.authenticate_as(self.staff)
+        with self.parser_context(return_value=[]), patch('main.views.operation_loggers') as loggers:
+            loggers.return_value.__enter__.return_value = {'change_preset': MagicMock()}
+            loggers.return_value.__exit__.return_value = False
+            response = self.client.post(f'/api/instances/{instance.pk}/admin_instance/change_preset/', {'prepared_preset_id': prepared.pk}, format='multipart')
+        self.assertEqual(response.status_code, 200, response.data)
+        instance.refresh_from_db()
+        self.assertNotEqual(instance.preset.name, prepared.preset_file.name)
+        self.assertEqual(Path(instance.preset.path).read_bytes(), b'<html>fixture</html>')
+
+    def test_incremental_log_bounded_reads_catch_up_without_duplicate_data(self):
+        instance = self.make_instance(with_log=True)
+        self.authenticate_as(self.owner)
+        url = f'/api/instances/{instance.pk}/logs/incremental/'
+        initial = self.client.get(url)
+        appended = b'x' * 70000
+        with open(instance.log_file.path, 'ab') as log:
+            log.write(appended)
+        first = self.client.get(url, {'cursor': initial.data['cursor']})
+        self.assertTrue(first.data['has_more'])
+        self.assertEqual(len(first.data['content']), 65536)
+        second = self.client.get(url, {'cursor': first.data['cursor']})
+        self.assertFalse(second.data['has_more'])
+        self.assertEqual((first.data['content'] + second.data['content']).encode(), appended)
+        empty = self.client.get(url, {'cursor': second.data['cursor']})
+        self.assertEqual(empty.data['content'], '')
+
+    def test_incremental_log_rejects_other_users_and_invalid_cursor(self):
+        instance = self.make_instance(with_log=True)
+        url = f'/api/instances/{instance.pk}/logs/incremental/'
+        self.authenticate_as(self.other)
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.authenticate_as(self.owner)
+        self.assertEqual(self.client.get(url, {'cursor': 'invalid'}).status_code, 400)
