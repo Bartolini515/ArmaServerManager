@@ -70,7 +70,7 @@ The status endpoint authorizes its persisted binding before reading Celery. Supe
 
 ## Managed file behavior
 
-The accepted storage service validates preset, start-script, and log references against the current configuration snapshot, expected per-user path leaves, local FileField storage paths, and regular-file/symlink checks. Create, preset replacement, and first-start admission perform a read-only `preflight_managed_root_layout(config_snapshot)` before opening operation loggers, using the same snapshot as the operation and logger. It compares the derived private siblings with configured, static, media, instance preset/log, and mission-upload storage roots. The public-root enumeration includes `Missions.mission_file`; unsupported/non-enumerable FileField storage fails closed for mutations that rely on private staging. Mission upload/replacement behavior itself is unchanged.
+The accepted storage service validates preset, start-script, and log references against the current configuration snapshot, expected per-user path leaves, local FileField storage paths, and regular-file/symlink checks. Create, preset replacement, and first-start admission perform a read-only `preflight_managed_root_layout(config_snapshot)` before opening operation loggers, using the same snapshot as the operation and logger. It compares the derived private siblings with configured, static, media, instance preset/log, mission and prepared-preset storage roots. Unsupported or non-enumerable FileField storage fails closed for mutations that rely on private staging.
 
 Creation stages the uploaded preset and generated configuration/start files, then publishes them with database state and port reservation under the lifecycle transaction. Precommit failures trigger compensation; clean restoration/removal is established only when compensation succeeds and verifies it. A failed or uncertain restore, destination cleanup, or private-stage cleanup can raise `ManagedFileRollbackError` and leave unresolved public paths or private stage/backup evidence, retained for repair where available. Preset replacement preserves the previous file/readiness/metadata only after verified successful compensation. User deletion preflights every owned instance and file, rejects busy or unknown work without autostopping, releases ports only after the guarded cleanup path, and deletes a profile configuration only when no other row references it. Instance deletion retains that per-user configuration.
 
@@ -96,10 +96,10 @@ The staff configuration response masks only non-empty `steam_auth.password` and 
 
 | Method | Path | Access | Behavior |
 | --- | --- | --- | --- |
-| POST | `/api/missions/` | Authenticated | Accepts one `.pbo` upload; a same-stored-filename mission is replaced. |
+| POST | `/api/missions/` | Authenticated | Accepts one `.pbo` upload. Replacing a same-filename mission requires staff and no instance with `is_running=true`; replacement uses the managed-file journal. |
 | DELETE | `/api/missions/<id>/` | Staff | Removes the mission and managed file; returns 409 while any instance has `is_running=true`. A missing file does not prevent deletion; unsafe references are rejected. Private cleanup failure is reported. |
 
-Missions do not have an uploader relation or version history. Upload replacement behavior is unchanged.
+Missions do not have an uploader relation or version history. Replacing an existing mission is treated as deletion for permission and running-instance checks. Generic `PUT` and `PATCH` are disabled.
 
 ## Prepared presets
 

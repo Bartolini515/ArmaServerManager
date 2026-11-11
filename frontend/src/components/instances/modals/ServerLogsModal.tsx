@@ -19,6 +19,7 @@ import CloseIcon from "@mui/icons-material/Close";
 import AxiosInstance from "../../AxiosInstance";
 import { useAlert } from "../../../contexts/AlertContext";
 import { getApiErrorMessage } from "../../../util/api-error";
+import { limitLogLines, shouldFollowLog } from "./logBuffer";
 
 const style = {
 	position: "absolute",
@@ -73,7 +74,6 @@ export default function ServerLogsModal(props: Props) {
 		let timer: ReturnType<typeof setTimeout>;
 		let cursor: string | undefined;
 		const controller = new AbortController();
-		setLoading(true);
 		const poll = async () => {
 			let delay = 1000;
 			try {
@@ -83,13 +83,13 @@ export default function ServerLogsModal(props: Props) {
 				if (!active) return;
 				const data = response.data as { content: string; cursor: string; reset: boolean; truncated: boolean; has_more: boolean };
 				const element = logTextArea.current;
-				const follow = !element || element.scrollHeight - element.scrollTop - element.clientHeight < 20;
+				const follow = !element || shouldFollowLog(element);
 				const replace = !cursor || data.reset;
 				cursor = data.cursor;
 				const clipped = !replace && displayedLength.current + data.content.length > 262144;
 				setLogs(previous => {
 					const text = (replace ? data.content : previous + data.content).slice(-262144);
-					const result = text.split("\n").slice(-(tailLines + 1)).join("\n");
+					const result = limitLogLines(text, tailLines);
 					displayedLength.current = result.length;
 					return result;
 				});

@@ -76,6 +76,10 @@ class ProfileBusyError(InstanceManagementError):
     status_code = 400
 
 
+class MissionReplacementForbidden(InstanceManagementError):
+    status_code = 403
+
+
 class InstanceLimitExceeded(InstanceManagementError):
     code = "instance_limit_exceeded"
     message = "The instance limit has been reached."
@@ -827,11 +831,17 @@ def create_prepared_preset(*, name, upload, config_snapshot):
             roots = _managed_roots(config_snapshot, media_prefixes=('prepared_presets/',), arma_names=())
             _ensure_managed_parent(root, 'prepared_presets/' + filename)
             field = PreparedPreset._meta.get_field('preset_file')
-            candidate = field.storage.get_available_name('prepared_presets/' + filename, max_length=field.max_length).replace('\\', '/')
-            candidate = _validate_relative_name(candidate)
-            if len(candidate.split('/')) != 2 or not candidate.startswith('prepared_presets/'):
-                raise UnsafeManagedPathError()
-            if PreparedPreset.objects.filter(preset_file=candidate).exists():
+            initial_name = 'prepared_presets/' + filename
+            for _attempt in range(16):
+                candidate = field.storage.get_available_name(initial_name, max_length=field.max_length).replace('\\', '/')
+                candidate = _validate_relative_name(candidate)
+                if len(candidate.split('/')) != 2 or not candidate.startswith('prepared_presets/'):
+                    raise UnsafeManagedPathError()
+                if not PreparedPreset.objects.filter(preset_file=candidate).exists():
+                    break
+                stem, suffix = os.path.splitext(filename)
+                initial_name = f'prepared_presets/{stem}_{uuid.uuid4().hex[:8]}{suffix}'
+            else:
                 raise ManagedFileError()
             journal = stack.enter_context(ManagedFileJournal(roots))
             def write(stage):
@@ -884,6 +894,43 @@ def copy_prepared_preset(preset_id):
         except BaseException:
             temporary.close()
             raise
+
+
+def upload_mission(*, upload, is_staff, config_snapshot):
+    """Serialize uploads with guarded replacement and lifecycle decisions."""
+    filename = _validate_upload_leaf(upload.name)
+    relative = 'missions/' + filename
+    require_lifecycle_autocommit()
+    journal = None
+    with ExitStack() as stack:
+        with lifecycle_transaction():
+            previous = Missions.objects.select_for_update().filter(mission_file=relative).first()
+            if previous is None:
+                return Missions.objects.create(mission_file=upload), None
+            if not is_staff:
+                raise MissionReplacementForbidden()
+            if Instances.objects.filter(is_running=True).exists():
+                raise InstanceBusyError()
+            root = _media_root()
+            storage = previous.mission_file.storage
+            if not isinstance(storage, FileSystemStorage) or _absolute_path(storage.location) != root:
+                raise UnsafeManagedPathError()
+            if Missions.objects.exclude(pk=previous.pk).filter(mission_file=relative).exists():
+                raise UnsafeManagedPathError()
+            exists = _validate_existing_file(root, relative, allow_missing=True)
+            roots = _managed_roots(config_snapshot, media_prefixes=('missions/',), arma_names=())
+            _ensure_managed_parent(root, relative)
+            journal = stack.enter_context(ManagedFileJournal(roots))
+            def write(stage):
+                with open(stage, 'wb') as destination:
+                    for chunk in upload.chunks():
+                        destination.write(chunk)
+            journal.stage('media', relative, write, replace=exists)
+            journal.publish()
+            Missions.objects.filter(pk=previous.pk).delete()
+            mission = Missions.objects.create(mission_file=relative)
+            transaction.on_commit(journal.mark_committed)
+        return mission, journal.finalize()
 
 
 def delete_mission(*, mission_id: int, config_snapshot: Mapping[str, Any]):

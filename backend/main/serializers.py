@@ -201,25 +201,6 @@ class MissionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Plik misji musi mieć rozszerzenie .pbo")
         return value
     
-    def create(self, validated_data):
-        """
-        Create a mission, replacing an existing record with the same stored filename.
-
-        The replacement removes the old model and file before saving the new upload;
-        this is intentionally not a versioned mission history.
-        """
-        mission_file = validated_data['mission_file']
-        
-        mission_path = os.path.join(
-            self.Meta.model.mission_file.field.upload_to, 
-            os.path.basename(mission_file.name)
-        )
-        
-        if existing_mission := self.Meta.model.objects.filter(mission_file=mission_path).first():
-            existing_mission.delete() 
-            
-        return self.Meta.model.objects.create(**validated_data)
-    
     class Meta:
         model = Missions
         fields = ('id', 'mission_file')

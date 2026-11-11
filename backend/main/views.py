@@ -62,6 +62,8 @@ from .instance_management import (
     create_prepared_preset,
     delete_prepared_preset,
     copy_prepared_preset,
+    upload_mission,
+    MissionReplacementForbidden,
     delete_profile,
     open_validated_file,
     preflight_managed_root_layout,
@@ -1298,6 +1300,7 @@ class PreparedPresetViewset(viewsets.GenericViewSet):
 
 class MissionsViewset(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
+    http_method_names = ['get', 'post', 'delete', 'head', 'options']
     queryset = Missions.objects.all()
     serializer_class = MissionSerializer
 
@@ -1321,8 +1324,18 @@ class MissionsViewset(viewsets.ModelViewSet):
     def create(self, request):
         serializer = self.serializer_class(data=request.data)
         if serializer.is_valid():
-            
-            mission = serializer.save()
-            return message_response(self.serializer_class(mission).data, "Misja została wgrana")
+            try:
+                mission, pending = upload_mission(upload=serializer.validated_data['mission_file'], is_staff=request.user.is_staff, config_snapshot=config.snapshot())
+            except MissionReplacementForbidden:
+                return Response({'message': 'Tylko administrator może zastąpić istniejącą misję.'}, status=403)
+            except InstanceBusyError:
+                return Response({'message': 'Nie można zastąpić misji, gdy jakakolwiek instancja działa.'}, status=409)
+            except (ManagedFileError, OSError, DatabaseError):
+                return _operation_error('Nie udało się bezpiecznie wgrać misji.')
+            response = message_response(self.serializer_class(mission).data, "Misja została wgrana")
+            if pending:
+                response.data['message'] = 'Misja wgrana; czyszczenie wymaga uwagi administratora.'
+                response.data['cleanup_pending'] = True
+            return response
         else:
             return Response(serializer.errors, status=400)

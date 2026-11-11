@@ -635,3 +635,28 @@ class InstancePermissionTests(TransactionTestCase):
         instance.refresh_from_db()
         self.assertNotEqual(instance.preset.name, prepared.preset_file.name)
         self.assertEqual(Path(instance.preset.path).read_bytes(), b'<html>fixture</html>')
+
+    def test_incremental_log_bounded_reads_catch_up_without_duplicate_data(self):
+        instance = self.make_instance(with_log=True)
+        self.authenticate_as(self.owner)
+        url = f'/api/instances/{instance.pk}/logs/incremental/'
+        initial = self.client.get(url)
+        appended = b'x' * 70000
+        with open(instance.log_file.path, 'ab') as log:
+            log.write(appended)
+        first = self.client.get(url, {'cursor': initial.data['cursor']})
+        self.assertTrue(first.data['has_more'])
+        self.assertEqual(len(first.data['content']), 65536)
+        second = self.client.get(url, {'cursor': first.data['cursor']})
+        self.assertFalse(second.data['has_more'])
+        self.assertEqual((first.data['content'] + second.data['content']).encode(), appended)
+        empty = self.client.get(url, {'cursor': second.data['cursor']})
+        self.assertEqual(empty.data['content'], '')
+
+    def test_incremental_log_rejects_other_users_and_invalid_cursor(self):
+        instance = self.make_instance(with_log=True)
+        url = f'/api/instances/{instance.pk}/logs/incremental/'
+        self.authenticate_as(self.other)
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.authenticate_as(self.owner)
+        self.assertEqual(self.client.get(url, {'cursor': 'invalid'}).status_code, 400)

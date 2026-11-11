@@ -65,3 +65,31 @@ class MissionDeletionTests(TransactionTestCase):
         response = self.client.delete(f'/api/missions/{self.mission.pk}/')
         self.assertEqual(response.status_code, 400)
         self.assertTrue(Missions.objects.exists())
+
+    def test_replacing_existing_mission_requires_staff(self):
+        path = Path(self.mission.mission_file.path)
+        self.client.force_authenticate(self.user)
+        response = self.client.post('/api/missions/', {'mission_file': SimpleUploadedFile('mission.pbo', b'new')}, format='multipart')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(path.read_bytes(), b'fixture')
+
+    def test_replacement_blocked_while_instance_running(self):
+        port = Ports.objects.create(port_number=2302)
+        Instances.objects.create(name='fixture', user=self.user, preset='fixture.html', port=port, is_running=True)
+        self.client.force_authenticate(self.admin)
+        response = self.client.post('/api/missions/', {'mission_file': SimpleUploadedFile('mission.pbo', b'new')}, format='multipart')
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(Path(self.mission.mission_file.path).read_bytes(), b'fixture')
+
+    def test_staff_can_replace_mission_when_stopped(self):
+        self.client.force_authenticate(self.admin)
+        response = self.client.post('/api/missions/', {'mission_file': SimpleUploadedFile('mission.pbo', b'new')}, format='multipart')
+        self.assertEqual(response.status_code, 200, response.data)
+        mission = Missions.objects.get()
+        self.assertEqual(Path(mission.mission_file.path).read_bytes(), b'new')
+
+    def test_direct_mission_updates_are_disabled(self):
+        self.client.force_authenticate(self.user)
+        response = self.client.patch(f'/api/missions/{self.mission.pk}/', {'mission_file': SimpleUploadedFile('other.pbo', b'new')}, format='multipart')
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(Path(self.mission.mission_file.path).read_bytes(), b'fixture')

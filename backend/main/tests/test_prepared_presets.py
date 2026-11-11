@@ -68,3 +68,13 @@ class PreparedPresetTests(TransactionTestCase):
             response = self.upload()
         self.assertEqual(response.status_code, 400)
         self.assertFalse((Path(self.temp.name) / 'media' / 'prepared_presets' / 'mods.html').exists())
+
+    def test_missing_catalog_file_does_not_block_same_file_name(self):
+        from main.models import PreparedPreset
+        self.client.force_authenticate(self.admin)
+        first = self.upload()
+        record = PreparedPreset.objects.get(pk=first.data['id'])
+        Path(record.preset_file.path).unlink()
+        second = self.upload('Inna')
+        self.assertEqual(second.status_code, 201, second.data)
+        self.assertNotEqual(first.data['preset_file'], second.data['preset_file'])

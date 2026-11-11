@@ -10,7 +10,7 @@ Process signalling is fenced to lifecycle task/run state. Stop, compensation, an
 
 ## File storage
 
-The accepted storage service requires local `FileSystemStorage`, administrator-managed trusted roots, safe path components, and same-filesystem hard links. For each unique trusted media/Arma-root parent, an existing sibling `.asm-private` directory must be provisioned outside every public/trusted root. Temporary tests provisioned sibling private directories; no production private roots were provisioned. The application never creates/chmods/chowns them. The read-only preflight inventories configured/static/media roots and the instance preset/log plus `Missions.mission_file` storage before loggers; unsupported/non-enumerable storage fails closed for file mutations.
+The accepted storage service requires local `FileSystemStorage`, administrator-managed trusted roots, safe path components, and same-filesystem hard links. For each unique trusted media/Arma-root parent, an existing sibling `.asm-private` directory must be provisioned outside every public/trusted root. Temporary tests provisioned sibling private directories; no production private roots were provisioned. The application never creates/chmods/chowns them. The read-only preflight inventories configured/static/media roots and the instance preset/log, mission, and prepared-preset storage before loggers; unsupported/non-enumerable storage fails closed for file mutations.
 
 The journal compensates handled runtime failures and preserves evidence when rollback cannot be verified. It does not guarantee distributed atomicity with MySQL, crash/power-loss recovery, or behavior on filesystems outside the tested local contract. A post-commit private cleanup failure is cleanup pending; committed database rows must not be rolled back.
 
@@ -40,7 +40,7 @@ Operation logs have no automatic retention or rotation and may contain operation
 
 Incremental log polling cannot reliably detect a same-file truncate-and-regrow operation that completes between polls and grows beyond the previous cursor.
 
-The generated known administrator password finding remains intentionally excluded by the user design. Mission upload replacement remains outside this remediation scope.
+The generated known administrator password finding remains intentionally excluded by the user design.
 
 ## Validation limits
 

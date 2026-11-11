@@ -26,7 +26,7 @@ export default function MissionManagement() {
 		setPending(true);
 		try {
 			const response = await AxiosInstance.delete(`missions/${selected.id}/`);
-			setAlert(response.data?.message ?? "Misja została usunięta.", "success");
+			setAlert(response.data?.message ?? "Misja została usunięta.", response.data?.cleanup_pending ? "warning" : "success");
 			setSelected(null);
 			await load();
 		} catch (error: unknown) {

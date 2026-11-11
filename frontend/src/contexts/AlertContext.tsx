@@ -1,4 +1,4 @@
-import { createContext, useState, useContext, type ReactNode } from "react";
+import { createContext, useState, useContext, useCallback, type ReactNode } from "react";
 import MyAlert from "../UI/feedback/MyAlert";
 
 interface AlertContextType {
@@ -24,7 +24,7 @@ export const AlertProvider = ({ children }: { children: ReactNode }) => {
 	>("error");
 	const [alertTimeout, setAlertTimeout] = useState<number>(8000);
 
-	const setAlert = (
+	const setAlert = useCallback((
 		message: string,
 		severity: "error" | "warning" | "info" | "success",
 		timeout: number = 8000
@@ -33,7 +33,7 @@ export const AlertProvider = ({ children }: { children: ReactNode }) => {
 		setAlertSeverity(severity);
 		setAlertTimeout(timeout);
 		setAlertOpen(true);
-	};
+	}, []);
 
 	const closeAlert = () => {
 		setAlertOpen(false);

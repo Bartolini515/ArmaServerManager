@@ -48,4 +48,4 @@ The instance log is separate from application operation logs. Check the authoriz
 
 ## Mission replacement is unexpected
 
-Uploading a `.pbo` with the same stored filename replaces the existing mission. There is no version history or uploader relation. Mission behavior is outside the Task 9 remediation scope.
+Uploading a `.pbo` with the same stored filename replaces the existing mission only for staff and when no instance has `is_running=true`. There is no version history or uploader relation.

@@ -5,6 +5,7 @@ import AlertDialog from "../../UI/dialogs/AlertDialog";
 import { useAlert } from "../../contexts/AlertContext";
 import { getApiErrorData, getApiErrorMessage, getFieldErrorMessage } from "../../util/api-error";
 import type { PreparedPreset } from "../instances/modals/PreparedPresetSelect";
+import { presetAddedAlert } from "./preparedPresetMessages";
 
 export default function PreparedPresetManagement() {
 	const [presets, setPresets] = useState<PreparedPreset[]>([]);
@@ -27,13 +28,15 @@ export default function PreparedPresetManagement() {
 		payload.append("preset_file", file);
 		setBusy(true);
 		try {
-			await AxiosInstance.post("prepared-presets/", payload, { headers: { "Content-Type": "multipart/form-data" } });
-			setAlert("Paczka została dodana.", "success");
+			const response = await AxiosInstance.post<{ cleanup_pending?: boolean }>("prepared-presets/", payload, { headers: { "Content-Type": "multipart/form-data" } });
+			const alert = presetAddedAlert(response.data);
+			setAlert(alert.message, alert.severity);
 			setName(""); setFile(null); setFileKey(value => value + 1);
 			await load();
 		} catch (error: unknown) {
 			const errors = getApiErrorData(error);
-			setAlert((errors && (getFieldErrorMessage(errors, "name") || getFieldErrorMessage(errors, "preset_file"))) || getApiErrorMessage(error, "Nie udało się dodać paczki."), "error");
+			const field = errors && ("name" in errors ? "name" : "preset_file" in errors ? "preset_file" : null);
+			setAlert(field && errors ? getFieldErrorMessage(errors, field) : getApiErrorMessage(error, "Nie udało się dodać paczki."), "error");
 		} finally { setBusy(false); }
 	};
 	const remove = async () => {
@@ -41,7 +44,7 @@ export default function PreparedPresetManagement() {
 		setBusy(true);
 		try {
 			const response = await AxiosInstance.delete(`prepared-presets/${selected.id}/`);
-			setAlert(response.data?.message ?? "Paczka została usunięta.", "success");
+			setAlert(response.data?.message ?? "Paczka została usunięta.", response.data?.cleanup_pending ? "warning" : "success");
 			setSelected(null); await load();
 		} catch (error: unknown) { setAlert(getApiErrorMessage(error, "Nie udało się usunąć paczki."), "error"); }
 		finally { setBusy(false); }
