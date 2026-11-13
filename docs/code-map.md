@@ -26,6 +26,7 @@ This document maps responsibilities without listing every file. Code and tests r
 | Configuration | Fresh JSON snapshots, locked merge updates and atomic local replacement | `backend/main/utils/config.py`, `backend/main/utils/config_lock.py` |
 | Logging | Per-operation files, grouped Celery logs, safe error records | `backend/main/utils/operation_logging.py`, `backend/main/tasks.py`, `backend/main/views.py` |
 | Administration | Django admin registration and port population command | `backend/main/admin.py`, `backend/main/management/` |
+| Download attention repair | Read-only inspection and operator-attested offline retirement of one download binding | `backend/main/management/commands/download_attention.py`, `backend/main/management/commands/resolve_download_attention.py` |
 | Offline path relocation | Dry-run and transactional update of validated instance/profile paths | `backend/main/management/commands/relocate_arma_paths.py` |
 | Test isolation | Temporary settings, SQLite runner, fakes, runtime-path guards, and Python DNS resolver guards | `backend/testsupport/`, `scripts/test_backend.py` |
 

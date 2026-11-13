@@ -18,6 +18,8 @@ Only single-model deletion routed through the managed service carries the intend
 
 ## Downloads and Redis
 
+The preliminary SteamCMD connection check allows 60 seconds; slow or failed startup can still time out and leave attention when process cleanup is uncertain. Increasing this limit reduces premature cancellation but does not prove the cause of an individual incident.
+
 The worker combines an owner-token renewable lease with durable database claims and checks both before shared writes. The lease alone is not a durable task claim or fence. The download view reuses same-instance work and resolves lifecycle/global conflicts before new-admission config/preset/disk preflight. It records static attention when an unfinished download disagrees with terminal Celery state, and late delivery/claim/readiness paths honor that fence. Preparation failures before secret-redactor initialization use a fixed diagnostic and do not format the original exception.
 
 Post-download verification checks that each expected mod directory exists; it does not verify the completeness or integrity of its contents.
@@ -25,6 +27,8 @@ Post-download verification checks that each expected mod directory exists; it do
 The supported coordination boundary is one ASM installation using one database and Redis. External writers, additional databases, direct workspace edits, and other Redis clients do not participate. The worker resolves numeric DNS before lease acquisition, outside the bounded Redis I/O guarantee. Its client caps the pool at four connections with connect/socket timeouts at or below one second. Bounded fake/client tests do not establish live Redis/TLS behavior or bound operating-system DNS.
 
 A static nonterminal attention state requires authorized operator review. Never treat task age, lease expiry, Celery backend state, or a missing cache key alone as proof that work stopped.
+
+The offline download attention resolution command relies on the operator's attestation of worker and SteamCMD quiescence; it does not verify processes or external writers. Incorrect attestation can release the shared-download fence while work is still active.
 
 Cancellation closes callback admission at a short gate. Work admitted before cancellation may be suppressed or complete later; no physical callback-entry timing promise is made. The implementation reuses existing bounded resources and adds no monitor thread or callback queue. Two daemon reader threads are used per cancellable supervisor. A blocked callback/record can keep its existing reader or handler alive until it returns or the worker process restarts. Attention is persisted before logger teardown; an active opted-in FileHandler closes itself after the record unwinds. If the process or readers cannot be proven quiescent, pipes are not closed cross-thread and the durable task remains unfinished.
 

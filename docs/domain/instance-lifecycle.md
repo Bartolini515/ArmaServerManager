@@ -52,7 +52,9 @@ The accepted service rejects running, starting, stopping, downloading, and unkno
 
 ## Operator recovery
 
-Before manual repair, an authorized operator must verify worker quiescence and confirm the current run ID, process birth time, run marker, and canonical executable through approved operations. Never blind-kill a PID, delete cache data, reset a claim, or remove a workspace while a process may still be alive. No reset endpoint is added. Preserve the structured attention evidence and use it to make the manual decision.
+Before manual repair, an authorized operator must verify worker quiescence and confirm the current run ID, process birth time, run marker, and canonical executable through approved operations. Never blind-kill a PID, delete cache data, reset a claim, or remove a workspace while a process may still be alive. No reset endpoint is added. Download attention records can be inspected and individually retired using the offline management commands described in troubleshooting; the operator must verify quiescence before applying a retirement. The command preserves the structured attention evidence.
+The preliminary SteamCMD connection check allows 60 seconds. A timeout can still leave the download in attention when process cleanup cannot be verified.
+
 ## Start task compatibility
 
 New start tasks publish only the instance and run identifiers after the reservation transaction commits. The task accepts a legacy `arma3_dir` keyword for already queued messages, discards it immediately, and derives the launch directory from persisted process data.
