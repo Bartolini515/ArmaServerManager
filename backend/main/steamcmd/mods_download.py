@@ -21,6 +21,8 @@ from ..workaround.modsrenamer import lowercase_addons_directory
 from .steam_auth import load_credentials, generate_steam_guard_code
 from .processes import CleanupUncertainError, start_process, terminate_owned_process_tree
 
+STEAM_CONNECTION_TIMEOUT_SECONDS = 60.0
+
 
 class DownloadResult(list[str]):
     """Legacy failed-ID list with safe filesystem cleanup status metadata."""
@@ -659,7 +661,7 @@ def test_connection(
 
     try:
         if cancel_check is None:
-            process.communicate(timeout=10)
+            process.communicate(timeout=STEAM_CONNECTION_TIMEOUT_SECONDS)
         else:
             _communicate_with_cancellation(process, cancel_check)
     except Exception as exc:
@@ -699,7 +701,7 @@ def test_connection(
 
 
 def _communicate_with_cancellation(process, cancel_check: Callable[[], bool]) -> None:
-    remaining = 10.0
+    remaining = STEAM_CONNECTION_TIMEOUT_SECONDS
     while remaining > 0:
         _require_not_cancelled(cancel_check)
         interval = min(0.25, remaining)
@@ -708,7 +710,7 @@ def _communicate_with_cancellation(process, cancel_check: Callable[[], bool]) ->
             return
         except subprocess.TimeoutExpired:
             remaining -= interval
-    raise subprocess.TimeoutExpired("SteamCMD", timeout=10)
+    raise subprocess.TimeoutExpired("SteamCMD", timeout=STEAM_CONNECTION_TIMEOUT_SECONDS)
 
 
 def _configuration_snapshot(config_snapshot: dict[str, Any] | None) -> dict[str, Any]:

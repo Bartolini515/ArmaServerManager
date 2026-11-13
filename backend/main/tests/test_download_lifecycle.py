@@ -31,6 +31,25 @@ from main.workaround.ghost_folder import GhostFolder, _atomic_publish
 
 
 class DownloadLifecycleTests(unittest.TestCase):
+    def test_connection_allows_slow_steam_startup_with_cancellation(self) -> None:
+        process = Mock(returncode=0)
+        attempts = 0
+
+        def communicate(*, timeout):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 44:
+                raise subprocess.TimeoutExpired("steamcmd", timeout)
+            return b"", b""
+
+        process.communicate.side_effect = communicate
+        with patch("main.steamcmd.mods_download.start_process", return_value=process):
+            result = test_connection(
+                "/fake/steamcmd", "fake-user", "fake-password",
+                secret_redactor=SteamSecretRedactor(()), cancel_check=lambda: False,
+            )
+        self.assertTrue(result)
+
     def test_rate_limited_batch_fails_then_later_batch_continues(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             download_root = Path(temp_dir) / "downloads"
@@ -793,7 +812,7 @@ class DownloadLifecycleTests(unittest.TestCase):
             )
 
         self.assertTrue(connected)
-        process.communicate.assert_called_once_with(timeout=10)
+        process.communicate.assert_called_once_with(timeout=60)
 
     def test_stream_cancellation_returns_while_both_readers_are_blocked(self) -> None:
         class BlockingPipe:
@@ -1616,7 +1635,7 @@ class DownloadLifecycleTests(unittest.TestCase):
             )
 
         self.assertFalse(connected)
-        process.communicate.assert_called_once_with(timeout=10)
+        process.communicate.assert_called_once_with(timeout=60)
 
     def test_connection_timeout_reaps_owned_tree_and_keeps_diagnostics_safe(self) -> None:
         process = Mock()
@@ -1642,7 +1661,7 @@ class DownloadLifecycleTests(unittest.TestCase):
         self.assertIn("TimeoutExpired", raised.exception.diagnostic)
         self.assertNotIn("fake-user", raised.exception.diagnostic)
         self.assertNotIn("fake-password", raised.exception.diagnostic)
-        process.communicate.assert_called_once_with(timeout=10)
+        process.communicate.assert_called_once_with(timeout=60)
 
     def test_timeout_escalates_and_reaps_owned_child_tree(self) -> None:
         child = _FakeOwnedProcess(
